@@ -367,6 +367,78 @@ def build_system_prompt(language: str, target: int) -> str:
     return trim_to("\n".join(lines), target, language)
 
 
+def load_docs(path: str) -> List[str]:
+    """读取 LongBench 格式的 jsonl（文件或目录），取出所有 context 作为长文档池。"""
+    files: List[str] = []
+    if os.path.isdir(path):
+        for name in sorted(os.listdir(path)):
+            if name.endswith(".jsonl"):
+                files.append(os.path.join(path, name))
+    elif os.path.isfile(path):
+        files.append(path)
+    else:
+        raise SystemExit("找不到 --doc-source: %s" % path)
+    if not files:
+        raise SystemExit("--doc-source 目录里没有 .jsonl 文件: %s" % path)
+
+    docs: List[str] = []
+    for fp in files:
+        with open(fp, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ctx = rec.get("context")
+                if isinstance(ctx, str) and ctx.strip():
+                    docs.append(ctx.strip())
+    if not docs:
+        raise SystemExit("--doc-source 里没有可用的 context 字段: %s" % path)
+    return docs
+
+
+def truncate_doc(text: str, target: int, language: str) -> str:
+    """把长文档裁到 target（中文按字符、英文按词），尽量在段落/句子边界。"""
+    if unit_len(text, language) <= target:
+        return text
+    if language == "zh":
+        cut = text[:target]
+        for mark in ("\n\n", "\n", "。"):
+            pos = cut.rfind(mark)
+            if pos >= int(target * 0.7):
+                return cut[:pos].rstrip()
+        return cut.rstrip()
+    out, used = [], 0
+    for line in text.split("\n"):
+        words = line.split()
+        if used + len(words) <= target:
+            out.append(line)
+            used += len(words)
+            continue
+        remain = target - used
+        if remain > 0:
+            out.append(" ".join(words[:remain]))
+        break
+    return "\n".join(out).rstrip()
+
+
+def build_base_doc(docs: List[str], start: int, target: int,
+                   language: str) -> str:
+    """从 start 开始顺序拼接文档，直到达到 target。"""
+    parts: List[str] = []
+    used = 0
+    i = start
+    while used < target and len(parts) < len(docs):
+        ctx = docs[i % len(docs)]
+        parts.append(ctx)
+        used += unit_len(ctx, language) + 1
+        i += 1
+    return truncate_doc("\n\n".join(parts), target, language)
+
+
 def load_scenarios(path: str, language: str) -> List[dict]:
     if not os.path.exists(path):
         raise SystemExit("找不到场景文件: %s" % path)
@@ -423,9 +495,14 @@ def render(tpl: str, sc: dict, rng: random.Random, when: str, step: int,
 
 
 def build_question(sc: dict, language: str, turn: int, target: int,
-                   rng: random.Random, when: str) -> str:
+                   rng: random.Random, when: str, use_doc: bool = False) -> str:
     style = get_styles(language)[sc["style"]]
     head = render(style["q"][(turn - 1) % len(style["q"])], sc, rng, when, turn, turn - 1)
+    if use_doc:
+        if language == "zh":
+            head = "结合我贴的材料，" + head
+        else:
+            head = "Given the material I pasted, " + head[0].lower() + head[1:]
     tails = TAILS_ZH if language == "zh" else TAILS_EN
     tail = render(tails[(turn - 1) % len(tails)], sc, rng, when, turn, turn - 1)
     text = head + "\n" + tail
@@ -522,6 +599,31 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
     pick.shuffle(shuffled)
 
     system = build_system_prompt(args.language, args.system_chars)
+
+    docs: List[str] = load_docs(args.doc_source) if args.doc_source else []
+    order: List[int] = []
+    if docs:
+        order = list(range(len(docs)))
+        random.Random(args.seed ^ 0xD0C).shuffle(order)
+        avg = max(1, sum(unit_len(d, args.language) for d in docs) // len(docs))
+        stride = max(1, args.base_len // avg)
+    else:
+        avg, stride = 0, 1
+
+    doc_cache: Dict[int, str] = {}
+
+    def base_for(user: int) -> str:
+        if not docs:
+            return system
+        if user not in doc_cache:
+            if args.doc_mode == "shared":
+                start = order[0]
+            else:
+                start = order[(user * stride) % len(order)]
+            doc = build_base_doc(docs, start, args.base_len, args.language)
+            doc_cache[user] = system + args.sep + doc
+        return doc_cache[user]
+
     histories: Dict[int, List[str]] = {}
     records: List[dict] = []
 
@@ -530,12 +632,13 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
             sc = shuffled[user % len(shuffled)]
             when = "{d} {t}".format(d=rng.choice(DAY_POOL), t=rng.choice(TIME_POOL))
             question = build_question(sc, args.language, turn,
-                                      args.user_chars, rng, when)
+                                      args.user_chars, rng, when, use_doc=bool(docs))
             answer = build_answer(sc, args.language, turn,
                                   args.answer_chars, rng, when)
 
+            base = base_for(user)
             parts = histories.get(user, [])
-            context = args.sep.join([system] + parts) if parts else system
+            context = args.sep.join([base] + parts) if parts else base
             records.append({
                 "input": question,
                 "context": context,
@@ -608,15 +711,22 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="生成 LongBench v1 格式的多轮 agent 对话 jsonl（压测用）")
     p.add_argument("--num-turns", type=int, default=3, help="对话轮数（默认 3）")
+    p.add_argument("--doc-source", default=None,
+                   help="LongBench 格式的 jsonl 文件或目录（取 context 作为长文档池）；"
+                        "给了它才会拼真实长文档")
+    p.add_argument("--base-len", type=int, default=0,
+                   help="基础长文档目标长度（中文=字符，英文=词）；给了 --doc-source 且为 0 时默认 32000")
+    p.add_argument("--doc-mode", choices=["distinct", "shared"], default="distinct",
+                   help="distinct: 每个用户不同文档；shared: 所有用户同一份文档（前缀完全共享）")
     p.add_argument("--users-per-turn", default="20",
                    help="每轮的用户/请求数，整数或逗号分隔（如 20 或 20,20,10），默认 20")
     p.add_argument("--scenarios", default=os.path.join(HERE, "scenarios.json"),
                    help="场景库 json 路径（默认脚本同目录的 scenarios.json）")
     p.add_argument("--system-chars", type=int, default=600,
                    help="system prompt 目标长度（默认 600）")
-    p.add_argument("--user-chars", type=int, default=120,
+    p.add_argument("--user-chars", type=int, default=150,
                    help="每轮用户提问目标长度（默认 120）")
-    p.add_argument("--answer-chars", type=int, default=300,
+    p.add_argument("--answer-chars", type=int, default=350,
                    help="每轮助手回答目标长度（默认 300）")
     p.add_argument("--language", choices=["zh", "en"], default="zh")
     p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字")
@@ -632,6 +742,8 @@ def main() -> None:
 
     counts = parse_users_per_turn(args.users_per_turn, args.num_turns)
     scenarios = load_scenarios(args.scenarios, args.language)
+    if args.doc_source and args.base_len <= 0:
+        args.base_len = 32000
     if args.system_chars <= 0 or args.user_chars <= 0 or args.answer_chars <= 0:
         raise SystemExit("--system-chars / --user-chars / --answer-chars 必须 > 0")
 

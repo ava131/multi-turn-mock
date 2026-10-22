@@ -6,6 +6,7 @@
 - 所有请求共享同一段 system prompt（逐字节一致）
 - 第 t 轮请求的 `context` 逐字节包含前 t-1 轮的问答原文，按文件顺序发送即可命中前缀缓存
 - 内容由「场景库 + 模板」合成，零依赖、可复现，不联网、不调用模型
+- 可选 **长文档模式**：用 LongBench v1 的真实长上下文拼出 ~32k 的基底，每轮再增长 ~0.5k
 
 ## 目录结构
 
@@ -15,7 +16,8 @@ multi-turn-mock/
 ├── gen_multiturn_longbench.py    # 生成脚本（Python 3.8+，仅标准库）
 ├── scenarios.json                # 场景库：zh 56 个 + en 8 个
 └── datasets/
-    └── agent_mt_3x20.jsonl       # 示例产物：3 轮 × 每轮 20 用户 = 60 条
+    ├── agent_mt_3x20.jsonl       # 示例：3 轮 × 20 用户 = 60 条（短上下文）
+    └── agent_mt_32k_3x3.jsonl    # 示例：3 轮 × 3 用户，每条 ~32k 字符（长文档模式）
 ```
 
 ## 快速开始
@@ -37,6 +39,10 @@ python3 gen_multiturn_longbench.py --num-turns 5 --users-per-turn 20 \
     --system-chars 2000 --user-chars 300 --answer-chars 800 \
     --out datasets/agent_mt_big.jsonl
 
+# 长文档模式：从 LongBench 真实文档拼 ~32k 基底，每轮 +0.5k
+python3 gen_multiturn_longbench.py --doc-source /path/to/LongBench/data/dureader.jsonl \
+    --num-turns 3 --users-per-turn 20 --out datasets/agent_mt_32k.jsonl
+
 # 英文
 python3 gen_multiturn_longbench.py --language en --num-turns 2 \
     --users-per-turn 10 --out datasets/agent_mt_en.jsonl
@@ -51,9 +57,12 @@ python3 gen_multiturn_longbench.py --language en --num-turns 2 \
 | `--num-turns` | `3` | 对话轮数 |
 | `--users-per-turn` | `20` | 每轮的用户/请求数。单个整数会套用到每一轮；也可写成 `20,20,10`（长度不足时用最后一个值补齐，超长时截断） |
 | `--scenarios` | 脚本同目录 `scenarios.json` | 场景库路径 |
-| `--system-chars` | `600` | system prompt 目标长度 |
-| `--user-chars` | `120` | 每轮用户提问目标长度 |
-| `--answer-chars` | `300` | 每轮助手回答目标长度 |
+| `--doc-source` | 无 | LongBench 格式的 jsonl 或目录（取 `context` 作为长文档池）。不给就是纯合成短上下文 |
+| `--base-len` | `0` | 基础长文档目标长度；给了 `--doc-source` 且为 0 时默认 `32000`。单位跟随语言：中文=字符，英文=词 |
+| `--doc-mode` | `distinct` | `distinct` 每个用户不同文档；`shared` 所有用户同一份（前缀完全共享） |
+| `--system-chars` | `600` | system prompt 目标长度（中文=字符，英文=词） |
+| `--user-chars` | `150` | 每轮用户提问目标长度 |
+| `--answer-chars` | `350` | 每轮助手回答目标长度（150+350 ≈ 每轮 +0.5k） |
 | `--language` | `zh` | `zh` 按字符计长度，`en` 按词计长度 |
 | `--dataset` | `agent_mt` | 写入 `dataset` 字段的值 |
 | `--sep` | `\n\n` | 消息分隔符（影响前缀拼接方式） |
@@ -63,6 +72,54 @@ python3 gen_multiturn_longbench.py --language en --num-turns 2 \
 | `--no-verify` | 关闭 | 跳过写后校验 |
 
 长度类参数的语义是「目标值」：素材不够会循环铺长，超了会在句末（`。`/换行）处截断，因此实际长度略小于等于目标值。
+
+## 长文档模式（~32k 上下文）
+
+默认模式只有几百字符的 system prompt，做 KV/前缀缓存压测时输入太短。用 `--doc-source` 指定 LongBench v1 数据后，每条请求的 `context` 会变成：
+
+```
+system prompt（所有请求共享）
++ 真实长文档（~32k，来自 LongBench 的 context 字段，多个文档拼接而成）
++ 前 t-1 轮问答（每轮约 +0.5k）
+```
+
+### 数据从哪来
+
+用你已有的 LongBench v1 数据即可，不需要额外下载：
+
+- AISBench 部署的目录：`ais_bench/datasets/LongBench/data/`
+- 或官方 `data.zip` 解压后的 `data/` 目录
+
+```bash
+# 单个任务（推荐，中文用 dureader / multifieldqa_zh，英文用 gov_report / multi_news）
+python3 gen_multiturn_longbench.py --doc-source ais_bench/datasets/LongBench/data/dureader.jsonl ...
+
+# 整个目录：会把目录下所有 *.jsonl 的 context 汇总成文档池
+python3 gen_multiturn_longbench.py --doc-source ais_bench/datasets/LongBench/data ...
+```
+
+### 长度怎么算
+
+- `--base-len 32000`：中文按**字符**、英文按**词**，多个文档按顺序拼接后截断到该长度（在段落/句子边界截断）
+- 每轮增长 ≈ `--user-chars + --answer-chars`，默认 `150 + 350 = 500`，所以 3 轮的上下文约为 `32k → 32.5k → 33k`
+- 注意：`32000` 是字符数，不是 token 数。中文大约 1 token ≈ 1.5–1.7 字符，所以 32k 字符 ≈ 19k–21k tokens；想要 ~32k tokens 就把 `--base-len` 调到 `50000` 左右（或按你模型的实际 tokenizer 换算）
+
+### 两种文档分配
+
+| `--doc-mode` | 行为 | 用途 |
+|---|---|---|
+| `distinct`（默认） | 每个用户从文档池不同位置取文档 | 模拟 20 个不同用户各自贴长材料，前缀各不相同 |
+| `shared` | 所有用户用同一份文档 | 20 条请求共享完整 ~32k 前缀，专门压前缀缓存命中 |
+
+`shared` 模式下第 1 轮 20 条请求的 `context` 完全相同（实测唯一前缀数 = 1）；`distinct` 模式下只有 system prompt 那段共享。
+
+### 效果示例（dureader，base-len 32000）
+
+```
+t1  ctx 32253 字符
+t2  ctx 32738 字符（+485）
+t3  ctx 33226 字符（+488）
+```
 
 ## 输出格式
 
@@ -97,6 +154,8 @@ python3 gen_multiturn_longbench.py --language en --num-turns 2 \
 **文件按轮次优先排序**：先第 1 轮的 20 条，再第 2 轮的 20 条，再第 3 轮的 20 条。直接按行顺序发送，就对应「bs 0–20 / 20–40 / 40–60」。
 
 **system prompt 全局共享**：所有请求的前 N 个字符（默认约 590 字符）完全一致；从该用户第一个问题开始分叉。
+
+**长文档基底**：开了 `--doc-source` 后，`context` 的固定部分是 `system + 长文档`，此后每轮只追加问答（约 +0.5k）。
 
 **前缀链保证**：对同一用户，
 
@@ -176,6 +235,7 @@ AISBench 的 LongBench 任务走 `load_dataset(path=<LongBench 目录>, name=<�
 - `answers` 只是占位回答，不是标准答案；
 - 同 `--seed` 输出完全一致，换 seed 会改变场景分配、数值和措辞；
 - 生成器按字符/词计长度，不依赖 tokenizer；要精确 token 数请在 AISBench 或推理框架侧统计；
+- 长文档模式引用的文本来自 [LongBench](https://huggingface.co/datasets/zai-org/LongBench)（THUDM/zai-org，AI2D/XLSUM 等子任务各有来源），示例数据集仅作压测用途，二次分发请遵循上游许可；
 - 深色/浅色编码、文件编码统一为 UTF-8，`ensure_ascii=False`，可直接 `json.loads` 逐行读取。
 
 ## 手工验证

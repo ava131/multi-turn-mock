@@ -13,7 +13,7 @@
 ```
 multi-turn-mock/
 ├── README.md                     # 本文件
-├── gen_multiturn_longbench.py    # 生成脚本（Python 3.8+，仅标准库）
+├── gen_multiturn_longbench.py    # 生成脚本（Python 3.8–3.13，仅标准库）
 ├── scenarios.json                # 场景库：zh 56 个 + en 8 个
 └── datasets/
     ├── agent_mt_3x20.jsonl       # 示例：3 轮 × 20 用户 = 60 条（短上下文）
@@ -349,6 +349,11 @@ reader_cfg = dict(input_columns=['question', 'max_out_len'], output_column='answ
 2. **走 LongBench 官方配置**：把 jsonl 放到 `ais_bench/datasets/LongBench/data/<name>.jsonl`，在 `LongBench.py` 的 `task_list` 加 `<name>`，再用 `longbench_<name>_gen` 配置（它的 `output_column='answers'`，与本文件格式一致）。
 
 3. **不要**把 LongBench 格式的文件直接喂给 `--custom-dataset-path`，它是按 `question` / `answer` 解析的；即使补上这两个字段，`question` 里也没有你的 `context`，长上下文会被丢掉。
+
+## 兼容性
+
+- 只用标准库，Python 3.8–3.13 均可运行（GitHub Actions 在 3.9 / 3.12 / 3.13 上做冒烟测试）
+- 3.11 起 `random.Random` 不再接受 tuple 作为种子，生成器已改用整数种子；3.9 与 3.12 的输出逐字节一致
 
 ## 已知限制
 

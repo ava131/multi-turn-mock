@@ -1,0 +1,68 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: v1 default
+        run: python gen_multiturn_longbench.py --num-turns 3 --users-per-turn 5 --out /tmp/v1.jsonl
+
+      - name: v1 shuffled 8k
+        run: python gen_multiturn_longbench.py --num-turns 4 --users-per-turn 5 --base-len 8000 --out /tmp/shuf.jsonl
+
+      - name: v1 pad-mode system
+        run: python gen_multiturn_longbench.py --pad-mode system --base-len 4000 --num-turns 2 --users-per-turn 3 --out /tmp/rep.jsonl
+
+      - name: v2 format
+        run: python gen_multiturn_longbench.py --format v2 --num-turns 2 --users-per-turn 4 --base-len 4000 --out /tmp/v2.jsonl
+
+      - name: doc source (concat + verbatim)
+        run: |
+          python - <<'PY'
+          import json
+          with open('/tmp/docs.jsonl', 'w', encoding='utf-8') as f:
+              for i in range(3):
+                  f.write(json.dumps({"context": ("第%d段测试文本。" % i) * 300}, ensure_ascii=False) + "\n")
+          PY
+          python gen_multiturn_longbench.py --doc-source /tmp/docs.jsonl --base-len 3000 --num-turns 2 --users-per-turn 3 --out /tmp/doc.jsonl
+          python gen_multiturn_longbench.py --doc-source /tmp/docs.jsonl --doc-verbatim --system-chars 0 --num-turns 2 --users-per-turn 3 --out /tmp/verbatim.jsonl
+
+      - name: validate
+        run: |
+          python - <<'PY'
+          import json
+
+          def load(p):
+              return [json.loads(l) for l in open(p, encoding="utf-8")]
+
+          v1 = load("/tmp/v1.jsonl")
+          assert all(set(r) == {"input", "context", "answers", "length",
+                                "dataset", "language", "all_classes", "_id"} for r in v1)
+
+          shuf = load("/tmp/shuf.jsonl")
+          t1 = [r["context"] for r in shuf[:5]]
+          assert len(set(t1)) == 5, "不同用户的 t1 应该互不相同"
+
+          v2 = load("/tmp/v2.jsonl")
+          assert all(r["answer"] in "ABCD" for r in v2)
+          assert all(set(r) >= {"context", "question", "choice_A", "choice_B",
+                                "choice_C", "choice_D", "answer", "difficulty",
+                                "length", "domain", "sub_domain", "_id"} for r in v2)
+
+          verbatim = load("/tmp/verbatim.jsonl")
+          assert verbatim[0]["context"].startswith("第"), "verbatim 首条应等于源文档"
+          print("smoke ok")
+          PY

@@ -493,7 +493,7 @@ def build_base_doc(docs: List[str], start: int, target: int,
 def build_filler_block(sc: dict, language: str, target: int, seed: int,
                        user: int, user_chars: int, answer_chars: int) -> str:
     """用该用户自己的场景内容（问答片段打乱）填到 target，保证不同用户前缀不同。"""
-    rng = random.Random((seed, user, 0xF111))
+    rng = random.Random(seed * 1_000_003 + user * 7919 + 0xF111)
     per_pair = max(1, user_chars + answer_chars)
     n_pairs = max(32, int(target / per_pair) * 2 + 8)
     paras: List[str] = []

@@ -18,7 +18,8 @@ multi-turn-mock/
 └── datasets/
     ├── agent_mt_3x20.jsonl       # 示例：3 轮 × 20 用户 = 60 条（短上下文）
     ├── agent_mt_32k_3x20.jsonl   # 示例：3 轮 × 20 用户，每条 ~32k 字符（4.9 MB）
-    ├── agent_mt_v2_32k_3x20.jsonl # 示例：同上，但字段对齐 LongBench v2 单选格式（5.1 MB）
+    ├── agent_mt_32k_shuffle_3x20.jsonl # 示例：3 轮 × 20 用户，按用户打乱填充到 32k（5.1 MB）
+    ├── agent_mt_v2_32k_3x20.jsonl # 示例：同上内容，字段对齐 LongBench v2 单选格式（5.1 MB）
     └── agent_mt_32k_3x3.jsonl    # 示例：3 轮 × 3 用户，每条 ~32k 字符（方便快速查看）
 ```
 
@@ -61,6 +62,7 @@ python3 gen_multiturn_longbench.py --language en --num-turns 2 \
 | `--scenarios` | 脚本同目录 `scenarios.json` | 场景库路径 |
 | `--doc-source` | 无 | LongBench 格式的 jsonl 或目录（取 `context` 作为长文档池）。不给就是纯合成短上下文 |
 | `--base-len` | `0` | 基础长上下文目标长度；单位跟随语言（中文=字符，英文=词）。不给 `--doc-source` 时表示把 system prompt 重复到该长度 |
+| `--pad-mode` | `shuffle` | 没有 `--doc-source` 时如何填 `--base-len`：`shuffle` 每个用户用自己的内容打乱（前缀不同）；`system` 重复 system（前缀相同，极端场景） |
 | `--doc-field` | 自动探测 | 长文本字段名；依次尝试 `context`/`prompt`/`text`/`input`/`content`/`document`/`doc` |
 | `--doc-verbatim` | 关闭 | 每条记录**原样**作为基底，不拼接、不截断（适合已经切好 32k token 的 jsonl） |
 | `--doc-mode` | `distinct` | `distinct` 每个用户不同文档；`shared` 所有用户同一份（前缀完全共享） |
@@ -108,9 +110,7 @@ python3 gen_multiturn_longbench.py --doc-source ais_bench/datasets/LongBench/dat
 - 每轮增长 ≈ `--user-chars + --answer-chars`，默认 `150 + 350 = 500`，所以 3 轮的上下文约为 `32k → 32.5k → 33k`
 - 注意：`32000` 是字符数，不是 token 数。中文大约 1 token ≈ 1.5–1.7 字符，所以 32k 字符 ≈ 19k–21k tokens；想要 ~32k tokens 就把 `--base-len` 调到 `50000` 左右（或按你模型的实际 tokenizer 换算）
 
-### 不依赖外部数据：把 system prompt 重复到 32k
-
-如果不想额外准备语料，直接让脚本把 system prompt 循环拼到 32k：
+### 不依赖外部数据：按用户打乱填充到 32k
 
 ```bash
 python3 gen_multiturn_longbench.py \
@@ -119,12 +119,22 @@ python3 gen_multiturn_longbench.py \
     --out datasets/agent_mt_32k.jsonl
 ```
 
-- 第 1 轮的 `context` = `system prompt` 重复约 54 次（≈32k 字符），**20 条请求完全相同**
-- 后两轮仍然只追加问答，`t1 → t2 → t3` 约为 `32k → 32.5k → 33k`
-- 因为是同一段文本反复拼接，内容没有语义价值，但前缀缓存、KV 占用、调度行为都是真实的；20 条共享完整 32k 前缀，最适合测 prefix cache 命中
-- 想改重复的文本块，用 `--system-chars` 控制单块长度；想要不同内容请用 `--doc-source`
+`--pad-mode` 默认是 `shuffle`：
 
-### 用你自己已经切好的 32k jsonl
+- 每个用户用自己的场景生成一批问答片段（约 2 倍所需数量），**打乱后**拼到 `--base-len`，组成 `system + 填充块`
+- 不同用户的场景/片段/顺序都不同，所以**前 32k 各不相同**（20 条 t1 的公共前缀只有 system 的 ~590 字符，约 1.8%）
+- 同一用户的基底在生成时就固定，后两轮继续只追加问答，前缀链不变
+- 填充块内部会有重复（同一批片段被打乱后可能再次使用），这是为了凑长度，不影响前缀分布
+
+如果想复现旧的“所有请求前缀完全相同”的极端场景，用：
+
+```bash
+python3 gen_multiturn_longbench.py --base-len 32000 --pad-mode system ...
+```
+
+此时 20 条 t1 的 `context` 逐字节相同，全部命中前缀缓存——只适合做极端压测，不代表真实用户。
+
+### 用你自己已经切好的 32k jsonl### 用你自己已经切好的 32k jsonl
 
 如果你手上已经有一份 jsonl，每行的某个字段就是切好的 ~32k token 文本，直接：
 

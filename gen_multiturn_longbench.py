@@ -490,6 +490,31 @@ def build_base_doc(docs: List[str], start: int, target: int,
     return truncate_doc("\n\n".join(parts), target, language)
 
 
+def build_filler_block(sc: dict, language: str, target: int, seed: int,
+                       user: int, user_chars: int, answer_chars: int) -> str:
+    """用该用户自己的场景内容（问答片段打乱）填到 target，保证不同用户前缀不同。"""
+    rng = random.Random((seed, user, 0xF111))
+    per_pair = max(1, user_chars + answer_chars)
+    n_pairs = max(32, int(target / per_pair) * 2 + 8)
+    paras: List[str] = []
+    for i in range(1, n_pairs + 1):
+        when = "{d} {t}".format(d=rng.choice(DAY_POOL), t=rng.choice(TIME_POOL))
+        paras.append(build_question(sc, language, i, user_chars, rng, when))
+        paras.append(build_answer(sc, language, i, answer_chars, rng, when))
+
+    parts: List[str] = []
+    used = 0
+    sep_len = unit_len("\n\n", language)
+    while used < target:
+        rng.shuffle(paras)
+        for para in paras:
+            if used >= target:
+                break
+            parts.append(para)
+            used += unit_len(para, language) + sep_len
+    return truncate_doc("\n\n".join(parts), target, language)
+
+
 def repeat_to(block: str, target: int, language: str, sep: str) -> str:
     """把一段文本（如 system prompt）重复拼到 target 长度。"""
     if not block:
@@ -670,11 +695,15 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
     repeat_block = ""
     if not docs and args.base_len > 0:
         if not system:
-            raise SystemExit("--base-len > 0 但没有 system prompt 可重复："
-                             "请把 --system-chars 设为 > 0，或用 --doc-source 指定文档")
-        repeat_block = repeat_to(system, args.base_len, args.language, args.sep)
-        print("未指定 --doc-source：把 system prompt 重复到 %d 作为基底" % args.base_len,
-              file=sys.stderr)
+            raise SystemExit("--base-len > 0 但没有 system prompt 可用："
+                             "请把 --system-chars 设为 > 0")
+        if args.pad_mode == "system":
+            repeat_block = repeat_to(system, args.base_len, args.language, args.sep)
+            print("pad-mode=system：把 system prompt 重复到 %d（所有请求前缀相同）"
+                  % args.base_len, file=sys.stderr)
+        else:
+            print("pad-mode=shuffle：每个用户用自己的内容打乱填充到 %d（前缀各不相同）"
+                  % args.base_len, file=sys.stderr)
     order: List[int] = []
     if docs:
         order = list(range(len(docs)))
@@ -688,6 +717,14 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
 
     def base_for(user: int) -> str:
         if not docs:
+            if args.base_len > 0 and args.pad_mode == "shuffle":
+                if user not in doc_cache:
+                    sc = shuffled[user % len(shuffled)]
+                    block = build_filler_block(sc, args.language, args.base_len,
+                                               args.seed, user,
+                                               args.user_chars, args.answer_chars)
+                    doc_cache[user] = system + args.sep + block
+                return doc_cache[user]
             return repeat_block or system
         if user not in doc_cache:
             if args.doc_mode == "shared":
@@ -837,6 +874,8 @@ def main() -> None:
                         "给了它才会拼真实长文档")
     p.add_argument("--base-len", type=int, default=0,
                    help="基础长文档目标长度（中文=字符，英文=词）；给了 --doc-source 且为 0 时默认 32000")
+    p.add_argument("--pad-mode", choices=["shuffle", "system"], default="shuffle",
+                   help="没有 --doc-source 时如何填充 base-len：shuffle=每个用户用自己的内容打乱（前缀不同）；system=重复 system（所有请求前缀相同）")
     p.add_argument("--doc-field", default=None,
                    help="长文本所在字段名；默认自动探测 context/prompt/text/input/content")
     p.add_argument("--doc-verbatim", action="store_true",

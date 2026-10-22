@@ -344,6 +344,27 @@ python3 gen_multiturn_longbench.py --format gsm8k \
 - `answer` 只为满足 `output_column`，精度无意义
 - 下一轮的 `question` 以上一轮的 `question + answer` 为前缀，前缀缓存依然成立（脚本会校验）
 
+### 一份文件同时兼容 v1 和 gsm8k（`--format both`）
+
+```bash
+python3 gen_multiturn_longbench.py --format both \
+    --num-turns 4 --users-per-turn 25 --base-len 50000 \
+    --out datasets/agent_mt_both_50k_4x25.jsonl
+```
+
+每行同时带两套字段：
+
+```json
+{"input": "...", "context": "...", "answers": ["..."], "length": 50789,
+ "dataset": "agent_mt", "language": "zh", "all_classes": null, "_id": "u00_t1",
+ "question": "<context + 本轮问题>", "answer": "<本轮回答>"}
+```
+
+- LongBench v1 的读取方用 `input` / `context` / `answers`
+- gsm8k 的读取方（模板 `{question}`）用 `question` / `answer`，长上下文不会丢
+- 两套前缀链都会校验
+- 代价是文件体积约为 v1 的 2 倍（`question` 里复制了一份 `context`）：4 轮 × 25 用户 × 50k 字符约 26 MB
+
 ## 常见报错：`KeyError: "Column answer not in the dataset"`
 
 ```

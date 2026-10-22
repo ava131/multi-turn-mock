@@ -59,7 +59,7 @@ python3 gen_multiturn_longbench.py --language en --num-turns 2 \
 | `--users-per-turn` | `20` | 每轮的用户/请求数。单个整数会套用到每一轮；也可写成 `20,20,10`（长度不足时用最后一个值补齐，超长时截断） |
 | `--scenarios` | 脚本同目录 `scenarios.json` | 场景库路径 |
 | `--doc-source` | 无 | LongBench 格式的 jsonl 或目录（取 `context` 作为长文档池）。不给就是纯合成短上下文 |
-| `--base-len` | `0` | 基础长文档目标长度；给了 `--doc-source` 且为 0 时默认 `32000`。单位跟随语言：中文=字符，英文=词 |
+| `--base-len` | `0` | 基础长上下文目标长度；单位跟随语言（中文=字符，英文=词）。不给 `--doc-source` 时表示把 system prompt 重复到该长度 |
 | `--doc-field` | 自动探测 | 长文本字段名；依次尝试 `context`/`prompt`/`text`/`input`/`content`/`document`/`doc` |
 | `--doc-verbatim` | 关闭 | 每条记录**原样**作为基底，不拼接、不截断（适合已经切好 32k token 的 jsonl） |
 | `--doc-mode` | `distinct` | `distinct` 每个用户不同文档；`shared` 所有用户同一份（前缀完全共享） |
@@ -106,6 +106,22 @@ python3 gen_multiturn_longbench.py --doc-source ais_bench/datasets/LongBench/dat
 - `--base-len 32000`：中文按**字符**、英文按**词**，多个文档按顺序拼接后截断到该长度（在段落/句子边界截断）
 - 每轮增长 ≈ `--user-chars + --answer-chars`，默认 `150 + 350 = 500`，所以 3 轮的上下文约为 `32k → 32.5k → 33k`
 - 注意：`32000` 是字符数，不是 token 数。中文大约 1 token ≈ 1.5–1.7 字符，所以 32k 字符 ≈ 19k–21k tokens；想要 ~32k tokens 就把 `--base-len` 调到 `50000` 左右（或按你模型的实际 tokenizer 换算）
+
+### 不依赖外部数据：把 system prompt 重复到 32k
+
+如果不想额外准备语料，直接让脚本把 system prompt 循环拼到 32k：
+
+```bash
+python3 gen_multiturn_longbench.py \
+    --base-len 32000 \
+    --num-turns 3 --users-per-turn 20 \
+    --out datasets/agent_mt_32k.jsonl
+```
+
+- 第 1 轮的 `context` = `system prompt` 重复约 54 次（≈32k 字符），**20 条请求完全相同**
+- 后两轮仍然只追加问答，`t1 → t2 → t3` 约为 `32k → 32.5k → 33k`
+- 因为是同一段文本反复拼接，内容没有语义价值，但前缀缓存、KV 占用、调度行为都是真实的；20 条共享完整 32k 前缀，最适合测 prefix cache 命中
+- 想改重复的文本块，用 `--system-chars` 控制单块长度；想要不同内容请用 `--doc-source`
 
 ### 用你自己已经切好的 32k jsonl
 

@@ -467,6 +467,20 @@ def build_base_doc(docs: List[str], start: int, target: int,
     return truncate_doc("\n\n".join(parts), target, language)
 
 
+def repeat_to(block: str, target: int, language: str, sep: str) -> str:
+    """把一段文本（如 system prompt）重复拼到 target 长度。"""
+    if not block:
+        return ""
+    if unit_len(block, language) >= target:
+        return truncate_doc(block, target, language)
+    parts: List[str] = []
+    used = 0
+    while used < target:
+        parts.append(block)
+        used += unit_len(block, language) + unit_len(sep, language)
+    return truncate_doc(sep.join(parts), target, language)
+
+
 def load_scenarios(path: str, language: str) -> List[dict]:
     if not os.path.exists(path):
         raise SystemExit("找不到场景文件: %s" % path)
@@ -630,6 +644,14 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
               if args.system_chars > 0 else "")
 
     docs: List[str] = load_docs(args.doc_source, args.doc_field) if args.doc_source else []
+    repeat_block = ""
+    if not docs and args.base_len > 0:
+        if not system:
+            raise SystemExit("--base-len > 0 但没有 system prompt 可重复："
+                             "请把 --system-chars 设为 > 0，或用 --doc-source 指定文档")
+        repeat_block = repeat_to(system, args.base_len, args.language, args.sep)
+        print("未指定 --doc-source：把 system prompt 重复到 %d 作为基底" % args.base_len,
+              file=sys.stderr)
     order: List[int] = []
     if docs:
         order = list(range(len(docs)))
@@ -643,7 +665,7 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
 
     def base_for(user: int) -> str:
         if not docs:
-            return system
+            return repeat_block or system
         if user not in doc_cache:
             if args.doc_mode == "shared":
                 start = order[0]

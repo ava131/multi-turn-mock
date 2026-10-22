@@ -746,6 +746,7 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
         return doc_cache[user]
 
     histories: Dict[int, List[str]] = {}
+    first_turn: Dict[int, tuple] = {}
     records: List[dict] = []
 
     for turn in range(1, args.num_turns + 1):
@@ -758,8 +759,14 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
                                   args.answer_chars, rng, when)
 
             base = base_for(user)
-            parts = histories.get(user, [])
-            context = args.sep.join([base] + parts) if parts else base
+            if args.same_each_turn and user in first_turn:
+                question, answer = first_turn[user]
+                context = base
+            else:
+                parts = histories.get(user, [])
+                context = args.sep.join([base] + parts) if parts else base
+                if args.same_each_turn and turn == 1:
+                    first_turn[user] = (question, answer)
             rid = "u{uid:02d}_t{turn}".format(uid=user, turn=turn)
 
             if args.format == "gsm8k":
@@ -833,6 +840,23 @@ def verify_gsm8k(records: List[dict], args: argparse.Namespace,
 
 
 def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> None:
+    if args.same_each_turn:
+        offsets, acc = [], 0
+        for n in counts:
+            offsets.append(acc)
+            acc += n
+        for user in range(max(counts)):
+            items = [records[offsets[t] + user]
+                     for t, n in enumerate(counts) if user < n]
+            first = items[0]
+            for idx, cur in enumerate(items[1:], start=2):
+                for k, v in first.items():
+                    if k == "_id":
+                        continue
+                    assert cur[k] == v, \
+                        "user %d 第 %d 轮与第 1 轮不一致（字段 %s）" % (user, idx, k)
+        return
+
     if args.format == "gsm8k":
         verify_gsm8k(records, args, counts)
         return
@@ -948,6 +972,8 @@ def main() -> None:
     p.add_argument("--answer-chars", type=int, default=350,
                    help="每轮助手回答目标长度（默认 300）")
     p.add_argument("--language", choices=["zh", "en"], default="zh")
+    p.add_argument("--same-each-turn", action="store_true",
+                   help="第 2 轮起原样复用第 1 轮的内容（请求 1 和 21 完全一致），用于测纯前缀命中")
     p.add_argument("--format", choices=["v1", "v2", "gsm8k"], default="v1",
                    help="v1: LongBench v1 字段；v2: LongBench v2 单选字段；gsm8k: AISBench 原生 gsm8k 的 question/answer 字段")
     p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字（仅 v1）")

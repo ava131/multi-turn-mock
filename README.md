@@ -355,6 +355,21 @@ python3 gen_multiturn_longbench.py --format gsm8k \
 
 三种格式不混用，各自字段严格对齐；`gsm8k` 的 `question` 就是完整 prompt（system + 长文档/填充块 + 历史 + 本轮问题），所以长上下文不会丢。
 
+## 每轮请求完全相同（`--same-each-turn`）
+
+想测“纯前缀命中”，让第 2 轮起原样复用第 1 轮的内容（**请求 i 和请求 i+K 完全一致**，K = 每轮用户数）：
+
+```bash
+python3 gen_multiturn_longbench.py --format gsm8k --same-each-turn \
+    --num-turns 4 --users-per-turn 25 --base-len 50000 \
+    --out /tmp/agent_mt_same_4x25.jsonl
+```
+
+- 第 1 轮的 25 条照常各不相同；第 2/3/4 轮直接复用自己第 1 轮的 `question`/`answer`（或 v1 的 `context`/`input`/`answers`）
+- 所以同一用户跨轮是 100% 同样的 prompt，只有 `_id` 不同
+- 文件仍是轮次优先，请求 #1 和 #26（K=25）内容逐字节一致
+- 适合验证“缓存到底能不能命中”，把数据因素排除掉
+
 ## 常见报错：`KeyError: "Column answer not in the dataset"`
 
 ```

@@ -38,6 +38,9 @@ jobs:
       - name: gsm8k format
         run: python gen_multiturn_longbench.py --format gsm8k --num-turns 3 --users-per-turn 3 --base-len 4000 --out /tmp/gsm.jsonl
 
+      - name: same each turn
+        run: python gen_multiturn_longbench.py --format gsm8k --same-each-turn --num-turns 3 --users-per-turn 3 --base-len 4000 --out /tmp/same.jsonl
+
       - name: doc source (concat + verbatim)
         run: |
           python - <<'PY'
@@ -64,6 +67,10 @@ jobs:
           shuf = load("/tmp/shuf.jsonl")
           t1 = [r["context"] for r in shuf[:5]]
           assert len(set(t1)) == 5, "不同用户的 t1 应该互不相同"
+
+          same = load("/tmp/same.jsonl")
+          assert same[0] == same[3] == same[6], "同一用户各轮应该完全一致"
+          assert same[0] != same[1], "不同用户应该不同"
 
           v2 = load("/tmp/v2.jsonl")
           assert all(r["answer"] in "ABCD" for r in v2)

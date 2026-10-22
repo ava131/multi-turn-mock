@@ -367,8 +367,12 @@ def build_system_prompt(language: str, target: int) -> str:
     return trim_to("\n".join(lines), target, language)
 
 
-def load_docs(path: str) -> List[str]:
-    """读取 LongBench 格式的 jsonl（文件或目录），取出所有 context 作为长文档池。"""
+def load_docs(path: str, field: Optional[str] = None):
+    """读取 jsonl（文件或目录），取出长文本作为文档池。
+
+    field 为空时按 context/prompt/text/input/content/document 自动探测；
+    记录本身是字符串时直接当作正文。
+    """
     files: List[str] = []
     if os.path.isdir(path):
         for name in sorted(os.listdir(path)):
@@ -381,7 +385,10 @@ def load_docs(path: str) -> List[str]:
     if not files:
         raise SystemExit("--doc-source 目录里没有 .jsonl 文件: %s" % path)
 
+    candidates = ["context", "prompt", "text", "input", "content", "document", "doc"]
     docs: List[str] = []
+    seen_fields = set()
+    picked = field
     for fp in files:
         with open(fp, "r", encoding="utf-8") as f:
             for line in f:
@@ -392,11 +399,32 @@ def load_docs(path: str) -> List[str]:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                ctx = rec.get("context")
+                if isinstance(rec, str):
+                    if rec.strip():
+                        docs.append(rec.strip())
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                seen_fields.update(rec.keys())
+                if picked is None:
+                    for cand in candidates:
+                        v = rec.get(cand)
+                        if isinstance(v, str) and v.strip():
+                            picked = cand
+                            break
+                if picked is None:
+                    continue
+                ctx = rec.get(picked)
                 if isinstance(ctx, str) and ctx.strip():
                     docs.append(ctx.strip())
+
+    if picked is None:
+        raise SystemExit(
+            "无法在 --doc-source 里找到长文本字段；可用字段有 %s，请用 --doc-field 指定"
+            % sorted(seen_fields))
     if not docs:
-        raise SystemExit("--doc-source 里没有可用的 context 字段: %s" % path)
+        raise SystemExit("--doc-source 里字段 %r 没有任何非空文本: %s" % (picked, path))
+    print("文档字段: %r | 文档数: %d" % (picked, len(docs)), file=sys.stderr)
     return docs
 
 
@@ -598,15 +626,16 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
     shuffled = list(scenarios)
     pick.shuffle(shuffled)
 
-    system = build_system_prompt(args.language, args.system_chars)
+    system = (build_system_prompt(args.language, args.system_chars)
+              if args.system_chars > 0 else "")
 
-    docs: List[str] = load_docs(args.doc_source) if args.doc_source else []
+    docs: List[str] = load_docs(args.doc_source, args.doc_field) if args.doc_source else []
     order: List[int] = []
     if docs:
         order = list(range(len(docs)))
         random.Random(args.seed ^ 0xD0C).shuffle(order)
         avg = max(1, sum(unit_len(d, args.language) for d in docs) // len(docs))
-        stride = max(1, args.base_len // avg)
+        stride = 1 if args.doc_verbatim else max(1, args.base_len // avg)
     else:
         avg, stride = 0, 1
 
@@ -620,8 +649,11 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
                 start = order[0]
             else:
                 start = order[(user * stride) % len(order)]
-            doc = build_base_doc(docs, start, args.base_len, args.language)
-            doc_cache[user] = system + args.sep + doc
+            if args.doc_verbatim:
+                doc = docs[start]
+            else:
+                doc = build_base_doc(docs, start, args.base_len, args.language)
+            doc_cache[user] = (system + args.sep + doc) if system else doc
         return doc_cache[user]
 
     histories: Dict[int, List[str]] = {}
@@ -716,6 +748,10 @@ def main() -> None:
                         "给了它才会拼真实长文档")
     p.add_argument("--base-len", type=int, default=0,
                    help="基础长文档目标长度（中文=字符，英文=词）；给了 --doc-source 且为 0 时默认 32000")
+    p.add_argument("--doc-field", default=None,
+                   help="长文本所在字段名；默认自动探测 context/prompt/text/input/content")
+    p.add_argument("--doc-verbatim", action="store_true",
+                   help="每条记录原样作为基底，不拼接、不截断（适合已经是 32k token 的 jsonl）")
     p.add_argument("--doc-mode", choices=["distinct", "shared"], default="distinct",
                    help="distinct: 每个用户不同文档；shared: 所有用户同一份文档（前缀完全共享）")
     p.add_argument("--users-per-turn", default="20",
@@ -744,8 +780,14 @@ def main() -> None:
     scenarios = load_scenarios(args.scenarios, args.language)
     if args.doc_source and args.base_len <= 0:
         args.base_len = 32000
-    if args.system_chars <= 0 or args.user_chars <= 0 or args.answer_chars <= 0:
-        raise SystemExit("--system-chars / --user-chars / --answer-chars 必须 > 0")
+    if args.system_chars < 0 or args.user_chars <= 0 or args.answer_chars <= 0:
+        raise SystemExit("--system-chars 必须 >= 0，--user-chars / --answer-chars 必须 > 0")
+    if not args.doc_source and args.system_chars == 0:
+        raise SystemExit("没有 --doc-source 又设了 --system-chars 0，context 会是空的")
+    if args.doc_verbatim and args.base_len:
+        print("提示: --doc-verbatim 下 --base-len 不生效", file=sys.stderr)
+    if args.doc_verbatim and args.doc_mode == "shared" and args.doc_source:
+        print("提示: shared + verbatim 时所有用户共用第一条记录", file=sys.stderr)
 
     records = generate(args, scenarios, counts)
     if not args.no_verify:

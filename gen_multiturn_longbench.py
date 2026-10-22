@@ -502,8 +502,15 @@ def build_filler_block(sc: dict, language: str, target: int, seed: int,
         paras.append(build_question(sc, language, i, user_chars, rng, when))
         paras.append(build_answer(sc, language, i, answer_chars, rng, when))
 
-    parts: List[str] = []
-    used = 0
+    if language == "zh":
+        header = "材料编号 u{uid:02d}｜场景 {sid}｜{domain}｜{subject}".format(
+            uid=user, sid=sc["id"], domain=sc["domain"], subject=sc["subject"])
+    else:
+        header = "Material u{uid:02d} | scenario {sid} | {domain} | {subject}".format(
+            uid=user, sid=sc["id"], domain=sc["domain"], subject=sc["subject"])
+
+    parts: List[str] = [header]
+    used = unit_len(header, language)
     sep_len = unit_len("\n\n", language)
     while used < target:
         rng.shuffle(paras)

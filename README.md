@@ -337,33 +337,23 @@ python3 gen_multiturn_longbench.py --format gsm8k \
 ```
 
 ```json
-{"question": "<system + 32k 块 + 历史 + 本轮问题>", "answer": "<本轮回答>", "_id": "u00_t1"}
+{"question": "<system + 32k 块 + 历史 + 本轮问题>", "answer": "<本轮回答>"}
 ```
 
 - `question` 就是完整 prompt，gsm8k 的模板是 `"{question}"`，会原样送给模型，长上下文不会丢
 - `answer` 只为满足 `output_column`，精度无意义
 - 下一轮的 `question` 以上一轮的 `question + answer` 为前缀，前缀缓存依然成立（脚本会校验）
+- 只有 `question` / `answer` 两个字段，和 AISBench 自带 gsm8k 数据的 schema 一致
 
-### 一份文件同时兼容 v1 和 gsm8k（`--format both`）
+### 两种格式各自独立
 
-```bash
-python3 gen_multiturn_longbench.py --format both \
-    --num-turns 4 --users-per-turn 25 --base-len 50000 \
-    --out datasets/agent_mt_both_50k_4x25.jsonl
-```
+| `--format` | 字段 | 给谁用 |
+|---|---|---|
+| `v1`（默认） | `input` / `context` / `answers` / `length` / `dataset` / `language` / `all_classes` / `_id` | LongBench v1 的读取方 |
+| `gsm8k` | `question` / `answer` | AISBench 原生 gsm8k 配置（模板 `"{question}"`） |
+| `v2` | `context` / `question` / `choice_A-D` / `answer` / ... | LongBench v2 的读取方 |
 
-每行同时带两套字段：
-
-```json
-{"input": "...", "context": "...", "answers": ["..."], "length": 50789,
- "dataset": "agent_mt", "language": "zh", "all_classes": null, "_id": "u00_t1",
- "question": "<context + 本轮问题>", "answer": "<本轮回答>"}
-```
-
-- LongBench v1 的读取方用 `input` / `context` / `answers`
-- gsm8k 的读取方（模板 `{question}`）用 `question` / `answer`，长上下文不会丢
-- 两套前缀链都会校验
-- 代价是文件体积约为 v1 的 2 倍（`question` 里复制了一份 `context`）：4 轮 × 25 用户 × 50k 字符约 26 MB
+三种格式不混用，各自字段严格对齐；`gsm8k` 的 `question` 就是完整 prompt（system + 长文档/填充块 + 历史 + 本轮问题），所以长上下文不会丢。
 
 ## 常见报错：`KeyError: "Column answer not in the dataset"`
 

@@ -38,9 +38,6 @@ jobs:
       - name: gsm8k format
         run: python gen_multiturn_longbench.py --format gsm8k --num-turns 3 --users-per-turn 3 --base-len 4000 --out /tmp/gsm.jsonl
 
-      - name: both format (v1 + gsm8k)
-        run: python gen_multiturn_longbench.py --format both --num-turns 3 --users-per-turn 3 --base-len 4000 --out /tmp/both.jsonl
-
       - name: doc source (concat + verbatim)
         run: |
           python - <<'PY'
@@ -75,15 +72,8 @@ jobs:
                                 "length", "domain", "sub_domain", "_id"} for r in v2)
 
           gsm = load("/tmp/gsm.jsonl")
-          assert all(set(r) == {"question", "answer", "_id"} for r in gsm)
+          assert all(set(r) == {"question", "answer"} for r in gsm)
           assert gsm[3]["question"].startswith(gsm[0]["question"] + "\n\n" + gsm[0]["answer"])
-
-          both = load("/tmp/both.jsonl")
-          assert all(set(r) >= {"input", "context", "answers", "length", "dataset",
-                                "language", "all_classes", "_id", "question", "answer"}
-                     for r in both)
-          assert all(r["question"] == r["context"] + "\n\n" + r["input"] for r in both)
-          assert all(r["answer"] == r["answers"][0] for r in both)
 
           verbatim = load("/tmp/verbatim.jsonl")
           assert verbatim[0]["context"].startswith("第"), "verbatim 首条应等于源文档"

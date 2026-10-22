@@ -762,29 +762,11 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
             context = args.sep.join([base] + parts) if parts else base
             rid = "u{uid:02d}_t{turn}".format(uid=user, turn=turn)
 
-            if args.format == "both":
-                # 一份文件同时满足：LongBench v1（input/context/answers/...）
-                # 和 AISBench 原生 gsm8k 配置（question/answer，模板 "{question}"）
-                records.append({
-                    "input": question,
-                    "context": context,
-                    "answers": [answer],
-                    "length": (unit_len(question, args.language)
-                               + unit_len(context, args.language)
-                               + unit_len(answer, args.language)),
-                    "dataset": args.dataset,
-                    "language": args.language,
-                    "all_classes": None,
-                    "_id": rid,
-                    "question": context + args.sep + question,
-                    "answer": answer,
-                })
-            elif args.format == "gsm8k":
+            if args.format == "gsm8k":
                 # AISBench 原生 gsm8k 配置：input_columns=['question']，prompt="{question}"
                 records.append({
                     "question": context + args.sep + question,
                     "answer": answer,
-                    "_id": rid,
                 })
             elif args.format == "v2":
                 tpls = CHOICE_TPL_ZH if args.language == "zh" else CHOICE_TPL_EN
@@ -824,13 +806,38 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
     return records
 
 
+def verify_gsm8k(records: List[dict], args: argparse.Namespace,
+                 counts: List[int]) -> None:
+    assert len(records) == sum(counts), \
+        "记录数 %d != 期望 %d" % (len(records), sum(counts))
+    for r in records:
+        assert set(r.keys()) == {"question", "answer"}, \
+            "gsm8k 只应有 question/answer 两个字段，实际: %s" % list(r.keys())
+        assert isinstance(r["question"], str) and r["question"], "question 不能为空"
+        assert isinstance(r["answer"], str) and r["answer"], "answer 不能为空"
+
+    offsets, acc = [], 0
+    for n in counts:
+        offsets.append(acc)
+        acc += n
+    for user in range(max(counts)):
+        prev = None
+        for turn, n in enumerate(counts):
+            if user >= n:
+                continue
+            rec = records[offsets[turn] + user]
+            if prev is not None:
+                assert rec["question"].startswith(prev["question"] + args.sep + prev["answer"]), \
+                    "user %d 第 %d 轮前缀链断裂" % (user, turn + 1)
+            prev = rec
+
+
 def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> None:
-    if args.format == "both":
-        expected_keys = {"input", "context", "answers", "length", "dataset",
-                         "language", "all_classes", "_id", "question", "answer"}
-    elif args.format == "gsm8k":
-        expected_keys = {"question", "answer", "_id"}
-    elif args.format == "v2":
+    if args.format == "gsm8k":
+        verify_gsm8k(records, args, counts)
+        return
+
+    if args.format == "v2":
         expected_keys = {"context", "question", "choice_A", "choice_B", "choice_C",
                          "choice_D", "answer", "difficulty", "length", "domain",
                          "sub_domain", "_id"}
@@ -846,17 +853,7 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
     for r in records:
         assert set(r.keys()) == expected_keys, \
             "字段不匹配: %s" % (set(r.keys()) ^ expected_keys)
-
-        if args.format == "both":
-            assert isinstance(r["answers"], list) and r["answers"], "answers 必须是非空 list"
-            assert isinstance(r["length"], int) and r["length"] > 0, "length 必须是正整数"
-            assert r["all_classes"] is None, "all_classes 应为 null"
-            assert r["question"].startswith(r["context"]), "question 应包含 context"
-            assert r["answer"] == r["answers"][0], "answer 应与 answers[0] 一致"
-        elif args.format == "gsm8k":
-            assert isinstance(r["question"], str) and r["question"], "question 不能为空"
-            assert isinstance(r["answer"], str) and r["answer"], "answer 不能为空"
-        elif args.format == "v2":
+        if args.format == "v2":
             assert r["answer"] in ("A", "B", "C", "D"), "answer 必须是 A/B/C/D"
             assert r["length"] in ("short", "medium", "long"), "v2 的 length 必须是类别"
             assert all(r["choice_" + c] for c in "ABCD"), "四个选项都不能为空"
@@ -865,7 +862,6 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
             assert isinstance(r["answers"], list) and r["answers"], "answers 必须是非空 list"
             assert isinstance(r["length"], int) and r["length"] > 0, "length 必须是正整数"
             assert r["all_classes"] is None, "all_classes 应为 null"
-
         assert r["_id"] not in seen, "重复 _id: %s" % r["_id"]
         seen.add(r["_id"])
         uid = int(r["_id"].split("_")[0][1:])
@@ -873,28 +869,14 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
 
     for uid, items in by_user.items():
         for prev, cur in zip(items, items[1:]):
-            if args.format == "both":
-                lb = (prev["context"] + args.sep + prev["input"]
-                      + args.sep + prev["answers"][0])
-                gs = prev["question"] + args.sep + prev["answer"]
-                assert cur["context"] == lb, \
-                    "user %d LongBench 前缀链断裂: %s" % (uid, cur["_id"])
-                assert cur["question"].startswith(gs), \
-                    "user %d gsm8k 前缀链断裂: %s" % (uid, cur["_id"])
-            elif args.format == "gsm8k":
-                gs = prev["question"] + args.sep + prev["answer"]
-                assert cur["question"].startswith(gs), \
-                    "user %d 前缀链断裂: %s" % (uid, cur["_id"])
-            elif args.format == "v2":
+            if args.format == "v2":
                 expected = (prev["context"] + args.sep + prev["question"]
                             + args.sep + prev["choice_" + prev["answer"]])
-                assert cur["context"] == expected, \
-                    "user %d 前缀链断裂: %s" % (uid, cur["_id"])
             else:
                 expected = (prev["context"] + args.sep + prev["input"]
                             + args.sep + prev["answers"][0])
-                assert cur["context"] == expected, \
-                    "user %d 前缀链断裂: %s" % (uid, cur["_id"])
+            assert cur["context"] == expected, \
+                "user %d 前缀链断裂: %s" % (uid, cur["_id"])
 
 
 def summarize(records: List[dict], args: argparse.Namespace, counts: List[int],
@@ -928,7 +910,7 @@ def summarize(records: List[dict], args: argparse.Namespace, counts: List[int],
               % (turn, n, ctx, inp, ans, ln), file=sys.stderr)
 
     unit = {"zh": "字符", "en": "词"}[args.language]
-    used = len({r["_id"].split("_")[0] for r in records})
+    used = max(counts) if args.format == "gsm8k" else len({r["_id"].split("_")[0] for r in records})
     print("\n总计 %d 条 / %d 个用户，场景库 %d 个（本次用到 %d 个），"
           "长度单位%s，dataset=%s，language=%s，分隔符=%r"
           % (len(records), used, len(scenarios), min(used, len(scenarios)),
@@ -966,8 +948,8 @@ def main() -> None:
     p.add_argument("--answer-chars", type=int, default=350,
                    help="每轮助手回答目标长度（默认 300）")
     p.add_argument("--language", choices=["zh", "en"], default="zh")
-    p.add_argument("--format", choices=["v1", "v2", "gsm8k", "both"], default="v1",
-                   help="v1: LongBench v1；v2: LongBench v2 单选；gsm8k: AISBench 原生 gsm8k；both: v1 字段 + gsm8k 的 question/answer")
+    p.add_argument("--format", choices=["v1", "v2", "gsm8k"], default="v1",
+                   help="v1: LongBench v1 字段；v2: LongBench v2 单选字段；gsm8k: AISBench 原生 gsm8k 的 question/answer 字段")
     p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字（仅 v1）")
     p.add_argument("--sep", default="\n\n", help="消息之间的分隔符（默认两个换行）")
     p.add_argument("--seed", type=int, default=42)

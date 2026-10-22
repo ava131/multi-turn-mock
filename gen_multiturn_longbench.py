@@ -762,7 +762,14 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
             context = args.sep.join([base] + parts) if parts else base
             rid = "u{uid:02d}_t{turn}".format(uid=user, turn=turn)
 
-            if args.format == "v2":
+            if args.format == "gsm8k":
+                # AISBench 原生 gsm8k 配置：input_columns=['question']，prompt="{question}"
+                records.append({
+                    "question": context + args.sep + question,
+                    "answer": answer,
+                    "_id": rid,
+                })
+            elif args.format == "v2":
                 tpls = CHOICE_TPL_ZH if args.language == "zh" else CHOICE_TPL_EN
                 options = [answer]
                 for tpl in tpls[:3]:
@@ -801,7 +808,9 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
 
 
 def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> None:
-    if args.format == "v2":
+    if args.format == "gsm8k":
+        expected_keys = {"question", "answer", "_id"}
+    elif args.format == "v2":
         expected_keys = {"context", "question", "choice_A", "choice_B", "choice_C",
                          "choice_D", "answer", "difficulty", "length", "domain",
                          "sub_domain", "_id"}
@@ -816,7 +825,10 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
     for r in records:
         assert set(r.keys()) == expected_keys, \
             "字段不匹配: %s" % (set(r.keys()) ^ expected_keys)
-        if args.format == "v2":
+        if args.format == "gsm8k":
+            assert isinstance(r["question"], str) and r["question"], "question 不能为空"
+            assert isinstance(r["answer"], str) and r["answer"], "answer 不能为空"
+        elif args.format == "v2":
             assert r["answer"] in ("A", "B", "C", "D"), "answer 必须是 A/B/C/D"
             assert r["length"] in ("short", "medium", "long"), "v2 的 length 必须是类别"
             assert all(r["choice_" + c] for c in "ABCD"), "四个选项都不能为空"
@@ -832,13 +844,19 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
 
     for uid, items in by_user.items():
         for prev, cur in zip(items, items[1:]):
-            if args.format == "v2":
+            if args.format == "gsm8k":
+                expected = prev["question"] + args.sep + prev["answer"]
+            elif args.format == "v2":
                 expected = (prev["context"] + args.sep + prev["question"]
                             + args.sep + prev["choice_" + prev["answer"]])
             else:
                 expected = (prev["context"] + args.sep + prev["input"]
                             + args.sep + prev["answers"][0])
-            assert cur["context"] == expected, "user %d 前缀链断裂: %s" % (uid, cur["_id"])
+            if args.format == "gsm8k":
+                assert cur["question"].startswith(expected), \
+                    "user %d 前缀链断裂: %s" % (uid, cur["_id"])
+            else:
+                assert cur["context"] == expected, "user %d 前缀链断裂: %s" % (uid, cur["_id"])
 
 
 def summarize(records: List[dict], args: argparse.Namespace, counts: List[int],
@@ -850,14 +868,24 @@ def summarize(records: List[dict], args: argparse.Namespace, counts: List[int],
     for turn, n in enumerate(counts, start=1):
         chunk = records[idx:idx + n]
         idx += n
-        ctx = sum(unit_len(r["context"], args.language) for r in chunk) / n
-        inp = sum(unit_len(r.get("input") or r.get("question", ""), args.language)
+        ctx = sum(unit_len(r.get("context") or r.get("question", ""), args.language)
                   for r in chunk) / n
-        ans = (sum(unit_len(r["choice_" + r["answer"]], args.language) for r in chunk) / n
-               if args.format == "v2"
-               else sum(unit_len(r["answers"][0], args.language) for r in chunk) / n)
-        ln = (sum(len(r["context"]) for r in chunk) / n if args.format == "v2"
-              else sum(r["length"] for r in chunk) / n)
+        inp = (sum(unit_len(r["question"], args.language) for r in chunk) / n
+               if args.format == "gsm8k" else
+               sum(unit_len(r.get("input") or r.get("question", ""), args.language)
+                   for r in chunk) / n)
+        if args.format == "v2":
+            ans = sum(unit_len(r["choice_" + r["answer"]], args.language) for r in chunk) / n
+        elif args.format == "gsm8k":
+            ans = sum(unit_len(r["answer"], args.language) for r in chunk) / n
+        else:
+            ans = sum(unit_len(r["answers"][0], args.language) for r in chunk) / n
+        if args.format == "v2":
+            ln = sum(len(r["context"]) for r in chunk) / n
+        elif args.format == "gsm8k":
+            ln = sum(len(r["question"]) for r in chunk) / n
+        else:
+            ln = sum(r["length"] for r in chunk) / n
         print("t%-5d %-8d %-14.0f %-11.0f %-12.0f %-12.0f"
               % (turn, n, ctx, inp, ans, ln), file=sys.stderr)
 
@@ -900,7 +928,7 @@ def main() -> None:
     p.add_argument("--answer-chars", type=int, default=350,
                    help="每轮助手回答目标长度（默认 300）")
     p.add_argument("--language", choices=["zh", "en"], default="zh")
-    p.add_argument("--format", choices=["v1", "v2"], default="v1",
+    p.add_argument("--format", choices=["v1", "v2", "gsm8k"], default="v1",
                    help="v1: LongBench v1 字段；v2: LongBench v2 单选字段（context/question/choice_A-D/answer/...）")
     p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字（仅 v1）")
     p.add_argument("--sep", default="\n\n", help="消息之间的分隔符（默认两个换行）")

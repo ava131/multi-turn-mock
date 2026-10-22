@@ -319,6 +319,31 @@ AISBench 的 LongBench 任务走 `load_dataset(path=<LongBench 目录>, name=<�
 - perf 模式不要开 shuffle / 随机采样，否则前缀命中会乱；
 - `dataset` 字段用自定义名字时，**官方 LongBench 的 `eval.py` 会因为 `dataset2metric` 里没有这个 key 而报错**；纯压测不跑精度就没影响。
 
+## AISBench 原生性能脚本（gsm8k 配置）兼容
+
+有些内部压测脚本会直接把数据集塞进 `ais_bench/datasets/gsm8k/`，然后跑 gsm8k 的 perf 配置。gsm8k 的 reader 是：
+
+```python
+reader_cfg = dict(input_columns=['question'], output_column='answer')
+template = "{question}"
+```
+
+和 LongBench 字段对不上，所以同样会报 `KeyError: Column answer ...`。用 `--format gsm8k` 输出两字段即可：
+
+```bash
+python3 gen_multiturn_longbench.py --format gsm8k \
+    --num-turns 4 --users-per-turn 25 --base-len 50000 \
+    --out datasets/agent_mt_gsm8k_50k_4x25.jsonl
+```
+
+```json
+{"question": "<system + 32k 块 + 历史 + 本轮问题>", "answer": "<本轮回答>", "_id": "u00_t1"}
+```
+
+- `question` 就是完整 prompt，gsm8k 的模板是 `"{question}"`，会原样送给模型，长上下文不会丢
+- `answer` 只为满足 `output_column`，精度无意义
+- 下一轮的 `question` 以上一轮的 `question + answer` 为前缀，前缀缓存依然成立（脚本会校验）
+
 ## 常见报错：`KeyError: "Column answer not in the dataset"`
 
 ```

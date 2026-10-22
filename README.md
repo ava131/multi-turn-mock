@@ -269,6 +269,35 @@ AISBench 的 LongBench 任务走 `load_dataset(path=<LongBench 目录>, name=<�
 - perf 模式不要开 shuffle / 随机采样，否则前缀命中会乱；
 - `dataset` 字段用自定义名字时，**官方 LongBench 的 `eval.py` 会因为 `dataset2metric` 里没有这个 key 而报错**；纯压测不跑精度就没影响。
 
+## 常见报错：`KeyError: "Column answer not in the dataset"`
+
+```
+KeyError: "Column answer not in the dataset. Current columns in the dataset:
+['input', 'context', 'answers', 'length', 'dataset', 'language', 'all_classes', '_id', 'subdivision', 'idx']"
+```
+
+**原因**：这个报错来自 AISBench 的自定义数据集（`--custom-dataset-path`）路径。它默认套用 `custom_qa` 配置：
+
+```python
+reader_cfg = dict(input_columns=['question', 'max_out_len'], output_column='answer')
+```
+
+而 LongBench v1 的字段是 `input` / `context` / `answers`，两边对不上，`get_gold_ans()` 取 `answer` 列时就炸了（列名里的 `subdivision` / `idx` 是 AISBench 的 `BaseDataset` 自己加的）。
+
+**三种解法**：
+
+1. **用本仓库的配置（推荐）**：`aisbench/agent_mt_gen.py` 里已经写好了正确的列映射，改一下 `dataset_path` 即可：
+
+   ```bash
+   ais_bench --config aisbench/agent_mt_gen.py -m all
+   ```
+
+   性能测试的话，把这个文件里的 `datasets = [...]` 块拷进你自己的 perf 配置即可。
+
+2. **走 LongBench 官方配置**：把 jsonl 放到 `ais_bench/datasets/LongBench/data/<name>.jsonl`，在 `LongBench.py` 的 `task_list` 加 `<name>`，再用 `longbench_<name>_gen` 配置（它的 `output_column='answers'`，与本文件格式一致）。
+
+3. **不要**把 LongBench 格式的文件直接喂给 `--custom-dataset-path`，它是按 `question` / `answer` 解析的；即使补上这两个字段，`question` 里也没有你的 `context`，长上下文会被丢掉。
+
 ## 已知限制
 
 - 文本是模板 + 场景库合成的，**通顺但事实是编的**（指标、时间、人名都是随机槽位），不能当知识库或评测集；

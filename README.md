@@ -17,7 +17,8 @@ multi-turn-mock/
 ├── scenarios.json                # 场景库：zh 56 个 + en 8 个
 └── datasets/
     ├── agent_mt_3x20.jsonl       # 示例：3 轮 × 20 用户 = 60 条（短上下文）
-    └── agent_mt_32k_3x3.jsonl    # 示例：3 轮 × 3 用户，每条 ~32k 字符（长文档模式）
+    ├── agent_mt_32k_3x20.jsonl   # 示例：3 轮 × 20 用户，每条 ~32k 字符（4.9 MB）
+    └── agent_mt_32k_3x3.jsonl    # 示例：3 轮 × 3 用户，每条 ~32k 字符（方便快速查看）
 ```
 
 ## 快速开始

@@ -277,6 +277,29 @@ TAILS_EN = [
 ]
 
 
+CHOICE_TPL_ZH = [
+    "先处理{focus}，再核对 {entity} 的情况",
+    "直接更换 {entity}，其余保持不变",
+    "维持现状，继续观察 24 小时",
+    "以上处理方式都不合适",
+]
+CHOICE_TPL_EN = [
+    "fix {focus} first, then cross-check {entity}",
+    "replace {entity} and keep everything else unchanged",
+    "keep the current state and watch for 24 hours",
+    "none of the above",
+]
+
+
+def length_bucket(n: int) -> str:
+    """LongBench v2 的 length 是类别，不是数值。"""
+    if n < 16000:
+        return "short"
+    if n < 64000:
+        return "medium"
+    return "long"
+
+
 def unit_len(text: str, language: str) -> int:
     """LongBench 官方口径：中文按字符数，英文按词数。"""
     return len(text) if language == "zh" else len(text.split())
@@ -693,25 +716,54 @@ def generate(args: argparse.Namespace, scenarios: List[dict],
             base = base_for(user)
             parts = histories.get(user, [])
             context = args.sep.join([base] + parts) if parts else base
-            records.append({
-                "input": question,
-                "context": context,
-                "answers": [answer],
-                "length": (unit_len(question, args.language)
-                           + unit_len(context, args.language)
-                           + unit_len(answer, args.language)),
-                "dataset": args.dataset,
-                "language": args.language,
-                "all_classes": None,
-                "_id": "u{uid:02d}_t{turn}".format(uid=user, turn=turn),
-            })
+            rid = "u{uid:02d}_t{turn}".format(uid=user, turn=turn)
+
+            if args.format == "v2":
+                tpls = CHOICE_TPL_ZH if args.language == "zh" else CHOICE_TPL_EN
+                options = [answer]
+                for tpl in tpls[:3]:
+                    options.append(render(tpl, sc, rng, when, turn, turn - 1))
+                rng.shuffle(options)
+                letter = "ABCD"[options.index(answer)]
+                records.append({
+                    "context": context,
+                    "question": question,
+                    "choice_A": options[0],
+                    "choice_B": options[1],
+                    "choice_C": options[2],
+                    "choice_D": options[3],
+                    "answer": letter,
+                    "difficulty": rng.choice(["easy", "hard"]),
+                    "length": length_bucket(len(context)),
+                    "domain": sc["domain"],
+                    "sub_domain": sc["style"],
+                    "_id": rid,
+                })
+            else:
+                records.append({
+                    "input": question,
+                    "context": context,
+                    "answers": [answer],
+                    "length": (unit_len(question, args.language)
+                               + unit_len(context, args.language)
+                               + unit_len(answer, args.language)),
+                    "dataset": args.dataset,
+                    "language": args.language,
+                    "all_classes": None,
+                    "_id": rid,
+                })
             histories[user] = parts + [question, answer]
     return records
 
 
 def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> None:
-    expected_keys = {"input", "context", "answers", "length", "dataset",
-                     "language", "all_classes", "_id"}
+    if args.format == "v2":
+        expected_keys = {"context", "question", "choice_A", "choice_B", "choice_C",
+                         "choice_D", "answer", "difficulty", "length", "domain",
+                         "sub_domain", "_id"}
+    else:
+        expected_keys = {"input", "context", "answers", "length", "dataset",
+                         "language", "all_classes", "_id"}
     assert len(records) == sum(counts), \
         "记录数 %d != 期望 %d" % (len(records), sum(counts))
 
@@ -720,9 +772,15 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
     for r in records:
         assert set(r.keys()) == expected_keys, \
             "字段不匹配: %s" % (set(r.keys()) ^ expected_keys)
-        assert isinstance(r["answers"], list) and r["answers"], "answers 必须是非空 list"
-        assert isinstance(r["length"], int) and r["length"] > 0, "length 必须是正整数"
-        assert r["all_classes"] is None, "all_classes 应为 null"
+        if args.format == "v2":
+            assert r["answer"] in ("A", "B", "C", "D"), "answer 必须是 A/B/C/D"
+            assert r["length"] in ("short", "medium", "long"), "v2 的 length 必须是类别"
+            assert all(r["choice_" + c] for c in "ABCD"), "四个选项都不能为空"
+            assert r["difficulty"] in ("easy", "hard"), "difficulty 必须是 easy/hard"
+        else:
+            assert isinstance(r["answers"], list) and r["answers"], "answers 必须是非空 list"
+            assert isinstance(r["length"], int) and r["length"] > 0, "length 必须是正整数"
+            assert r["all_classes"] is None, "all_classes 应为 null"
         assert r["_id"] not in seen, "重复 _id: %s" % r["_id"]
         seen.add(r["_id"])
         uid = int(r["_id"].split("_")[0][1:])
@@ -730,7 +788,12 @@ def verify(records: List[dict], args: argparse.Namespace, counts: List[int]) -> 
 
     for uid, items in by_user.items():
         for prev, cur in zip(items, items[1:]):
-            expected = prev["context"] + args.sep + prev["input"] + args.sep + prev["answers"][0]
+            if args.format == "v2":
+                expected = (prev["context"] + args.sep + prev["question"]
+                            + args.sep + prev["choice_" + prev["answer"]])
+            else:
+                expected = (prev["context"] + args.sep + prev["input"]
+                            + args.sep + prev["answers"][0])
             assert cur["context"] == expected, "user %d 前缀链断裂: %s" % (uid, cur["_id"])
 
 
@@ -744,9 +807,13 @@ def summarize(records: List[dict], args: argparse.Namespace, counts: List[int],
         chunk = records[idx:idx + n]
         idx += n
         ctx = sum(unit_len(r["context"], args.language) for r in chunk) / n
-        inp = sum(unit_len(r["input"], args.language) for r in chunk) / n
-        ans = sum(unit_len(r["answers"][0], args.language) for r in chunk) / n
-        ln = sum(r["length"] for r in chunk) / n
+        inp = sum(unit_len(r.get("input") or r.get("question", ""), args.language)
+                  for r in chunk) / n
+        ans = (sum(unit_len(r["choice_" + r["answer"]], args.language) for r in chunk) / n
+               if args.format == "v2"
+               else sum(unit_len(r["answers"][0], args.language) for r in chunk) / n)
+        ln = (sum(len(r["context"]) for r in chunk) / n if args.format == "v2"
+              else sum(r["length"] for r in chunk) / n)
         print("t%-5d %-8d %-14.0f %-11.0f %-12.0f %-12.0f"
               % (turn, n, ctx, inp, ans, ln), file=sys.stderr)
 
@@ -787,7 +854,9 @@ def main() -> None:
     p.add_argument("--answer-chars", type=int, default=350,
                    help="每轮助手回答目标长度（默认 300）")
     p.add_argument("--language", choices=["zh", "en"], default="zh")
-    p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字")
+    p.add_argument("--format", choices=["v1", "v2"], default="v1",
+                   help="v1: LongBench v1 字段；v2: LongBench v2 单选字段（context/question/choice_A-D/answer/...）")
+    p.add_argument("--dataset", default="agent_mt", help="写入 dataset 字段的名字（仅 v1）")
     p.add_argument("--sep", default="\n\n", help="消息之间的分隔符（默认两个换行）")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", default="agent_mt.jsonl", help="输出 jsonl 路径")

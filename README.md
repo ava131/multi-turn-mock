@@ -18,6 +18,7 @@ multi-turn-mock/
 └── datasets/
     ├── agent_mt_3x20.jsonl       # 示例：3 轮 × 20 用户 = 60 条（短上下文）
     ├── agent_mt_32k_3x20.jsonl   # 示例：3 轮 × 20 用户，每条 ~32k 字符（4.9 MB）
+    ├── agent_mt_v2_32k_3x20.jsonl # 示例：同上，但字段对齐 LongBench v2 单选格式（5.1 MB）
     └── agent_mt_32k_3x3.jsonl    # 示例：3 轮 × 3 用户，每条 ~32k 字符（方便快速查看）
 ```
 
@@ -161,6 +162,44 @@ t2  ctx 32738 字符（+485）
 t3  ctx 33226 字符（+488）
 ```
 
+## 对齐 LongBench v2 字段（`--format v2`）
+
+LongBench v2 是**单选**格式，字段是：
+
+```json
+{"_id": "...", "domain": "...", "sub_domain": "...", "difficulty": "easy|hard",
+ "length": "short|medium|long", "question": "...",
+ "choice_A": "...", "choice_B": "...", "choice_C": "...", "choice_D": "...",
+ "answer": "A|B|C|D", "context": "..."}
+```
+
+加 `--format v2` 就能输出这一套：
+
+```bash
+python3 gen_multiturn_longbench.py --format v2 \
+    --base-len 32000 --num-turns 3 --users-per-turn 20 \
+    --out datasets/agent_mt_v2_32k.jsonl
+```
+
+字段映射：
+
+| v2 字段 | 取值 |
+|---|---|
+| `context` | system + 长文档 + 前 t-1 轮问答（多轮仍然靠它携带历史） |
+| `question` | 本轮用户提问 |
+| `choice_A`–`choice_D` | 4 个选项，其中一个是本轮合成的回答，另外 3 个是场景相关的干扰项 |
+| `answer` | 正确项字母，分布近似均匀（A/B/C/D） |
+| `difficulty` | `easy` / `hard` 随机 |
+| `length` | v2 的**类别**字段：`short` / `medium` / `long`（阈值 16k / 64k 字符，是我们自己定的；v2 官方按词数划分） |
+| `domain` / `sub_domain` | 场景的 `domain` 与 `style` |
+| `_id` | `uXX_tY` |
+
+注意：
+
+- v2 是**单轮单选**，没有多轮概念；多轮依然是靠 `context` 里带历史、每轮一个独立请求实现的
+- 选项内容是占位：`answer` 只对得上我们自己造的四个选项，没有真实语义，纯压测足够
+- AISBench 的 `longbenchv2` 配置用 `load_dataset('json', data_files=path)` 读取，**jsonl 也能直接读**；把配置里的 `path` 指向本文件即可
+
 ## 输出格式
 
 每行一个 JSON 对象，字段与 LongBench v1 一致（顺序也保持一致）：
@@ -283,6 +322,8 @@ reader_cfg = dict(input_columns=['question', 'max_out_len'], output_column='answ
 ```
 
 而 LongBench v1 的字段是 `input` / `context` / `answers`，两边对不上，`get_gold_ans()` 取 `answer` 列时就炸了（列名里的 `subdivision` / `idx` 是 AISBench 的 `BaseDataset` 自己加的）。
+
+**需要重新生成数据吗**：不需要。数据本身没问题，报错是 AISBench 配置的列映射不对。只有当你想要 v2 字段时，才需要加 `--format v2` 再生成一次（见上一节）。
 
 **三种解法**：
 

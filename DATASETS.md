@@ -1,0 +1,178 @@
+# 多轮对话 / 请求轨迹 数据集现状
+
+分两类：**有文本、没有到达时间**的对话语料；**有到达时间/前缀关系、没有文本**的请求轨迹（trace）。
+所有长度都是本次实测（样本量写在各自小节），不是论文数字。
+
+---
+
+## A. 对话语料（有文本，无逐轮到达时间）
+
+### A1. WildChat-1M
+
+- 来源：AI2，2023 年免费 WildChat 服务上的真实用户 ↔ ChatGPT（GPT-3.5/GPT-4）对话
+- 规模：1,000,000 段；字段 `conversation / model / timestamp / language / toxic / redacted / country`
+- 许可：ODC-BY
+- 实测（500 段随机样本）：总字符中位 **2,259**、p90 10,831、p99 32,653、max 50,976；轮数中位 4、max 36
+- 约 **600 tokens/段**（中位），基本到不了 32k
+
+示例 1（英文，2 轮，医疗问答）：
+
+```
+[user]      Old age PT hx of DM, HTN, dyslipidemia His ECG I.II, aVF (MI)
+            what is the highest risk factor for this condition?
+[assistant] The highest risk factor for this condition (myocardial infarction, MI)
+            in this patient would be old age combined with a history of diabetes...
+```
+
+示例 2（中文，4 轮，话题跳变）：
+
+```
+[user]      如何在sd上无错误进行模型训练
+[assistant] 在SD卡上进行模型训练的过程通常包括以下几个步骤：1. 准备数据和环境...
+[user]      作为一名室内设计师该如何在网上快速找到客户
+[assistant] 作为一名室内设计师，在网上快速找到客户可以通过以下途径：1. 展示作品...
+```
+
+### A2. ShareGPT
+
+- 来源：社区分享的真实 ChatGPT 对话，`philschmid/sharegpt-raw` 清洗版
+- 规模：约 9 万段；字段 `id / conversations[{from, value}]`
+- 长度：以几千 token 以内为主（未做全量统计）
+
+示例（中文，4 轮，法律咨询）：
+
+```
+[human] 我们公司珠海市五一一八科技有限公司开发了一个chrome浏览器插件...
+[gpt]   尊敬的法官：我代表珠海市五一一八科技有限公司，就百度公司...
+[human] continue
+[gpt]   虑我们的辩护意见，并能够公正地判断此事的真相...
+```
+
+### A3. MT-Bench
+
+- 来源：LMSYS，高质量多轮问题集（FastChat 仓库 `question.jsonl`）
+- 规模：80 题 × 2 轮；字段 `question_id / category / turns`
+- 实测：总字符平均 **404**、中位 285、max 1,756（约 150 tokens）
+
+示例 1（writing, id=81）：
+
+```
+Q1 Compose an engaging travel blog post about a recent trip to Hawaii...
+Q2 Rewrite your previous response. Start every sentence with the letter A.
+```
+
+示例 2（writing, id=82）：
+
+```
+Q1 Draft a professional email seeking your supervisor's feedback on the 'Quarterly Financial Report'...
+Q2 Take a moment to evaluate and critique your own response.
+```
+
+### A4. LoCoMo
+
+- 来源：Snap，长期对话记忆研究；10 段公开（论文 50 段）
+- 特点：多 session、超长闲聊 + QA
+- 实测（第 1 段）：**448 轮 / 53,049 字符 ≈ 13k tokens**；论文平均约 9k tokens
+
+示例（同一段对话开头）：
+
+```
+[Speaker_1] Hey Carol! Nice to see you again. I've been keeping busy since Friday,
+            cause I went hiking in the mountains with my friends. It was awesome!
+[Speaker_2] Hey Roy! Nice to see you too! You will not believe it, but I've just
+            moved with my dogs to a town with stunning mountain views.
+```
+
+### A5. LongMemEval
+
+- 来源：UCLA 等，ICLR 2025；测试聊天助手的长期记忆
+- 规模：500 条问题，每条配一段长聊天历史（多 session、带时间戳）
+- 长度：S 版约 **115k tokens**，M 版百万级（论文口径）
+- 用途：长历史 + 记忆类 QA；不是对话语料
+
+### A6. InfiniteBench（En.Dia / Zh.Dia）
+
+- 来源：OpenBMB，100k+ 长上下文基准
+- En.Dia：**200 条，平均输入 103.6k tokens**（剧本式长对话，识别说话人）
+- 可截断到 32k 使用
+
+### A7. LMSYS-Chat-1M
+
+- 来源：LMSYS，真实用户与 25 个模型的对话
+- 规模：100 万段、150+ 语言
+- 获取：**gated**（需同意，研究用途）——本次没有取样
+
+---
+
+## B. 请求轨迹（有到达时间/前缀关系，无文本）
+
+### B1. BurstGPT v2
+
+- 来源：HKUST(GZ)，微软 Azure 上真实 ChatGPT/GPT-4 流量
+- 规模：约 529 万条请求 / 121 天
+- 字段：`Timestamp / Session ID / Elapsed time / Model / Request tokens / Response tokens / Total tokens / Log Type`
+- 实测（前 7,059 行样本）：请求 token 平均 **625**、响应平均 **245**、max 3,407
+- 价值：`Session ID` 直接给出会话归属，可按时间重放多轮
+
+示例：
+
+```
+Timestamp,Model,Request tokens,Response tokens,Total tokens,Log Type
+5,ChatGPT,472,18,490,Conversation log
+45,ChatGPT,1087,230,1317,Conversation log
+118,GPT-4,417,276,693,Conversation log
+```
+
+### B2. Azure LLM Inference Trace 2023（Splitwise）
+
+- 来源：微软 Azure 生产推理服务，2023-11-16 采样
+- 规模：conversation trace **19,366 条**；另有 code trace
+- 字段：`TIMESTAMP / ContextTokens / GeneratedTokens`
+- 实测：上下文平均 **1,155** tokens、生成平均 **211**、max 14,050
+- 短板：**没有 session id、没有文本**（隐私原因）
+
+示例：
+
+```
+TIMESTAMP,ContextTokens,GeneratedTokens
+2023-11-16 18:15:46.6805900,374,44
+2023-11-16 18:15:50.9951690,396,109
+2023-11-16 18:15:51.2224670,879,55
+```
+
+### B3. Mooncake / Kimi trace
+
+- 来源：Moonshot（Kimi），FAST'25 论文配套数据
+- 规模：**12,031 条请求**，时间跨度 0 ~ 3,536,999（秒）
+- 字段：`timestamp / input_length / output_length / hash_ids`
+- 实测：输入平均 **12,035** tokens、输出平均 343、max 126,195
+- `hash_ids` = 前缀块哈希（**块大小约 512 token**），直接描述前缀共享
+- 复用统计：**42.5%** 的请求有 ≥50% 前缀可复用；共享 token 中位 512、p90 12,800、max 122,880
+
+示例：
+
+```json
+{"timestamp": 0, "input_length": 6758, "output_length": 500, "hash_ids": [0,1,2,...,13]}
+{"timestamp": 0, "input_length": 7322, "output_length": 490, "hash_ids": [0,14,15,...,27]}
+```
+
+（第 2 条只共享块 0，之后是新块——典型的“同前缀、新内容”）
+
+---
+
+## 汇总
+
+| 数据集 | 文本 | 逐轮到达时间 | 前缀/会话关系 | 32k 级别 |
+|---|---|---|---|---|
+| WildChat-1M | ✅ | ❌（仅会话级时间戳） | ❌ | ❌（中位 ~600 tokens） |
+| ShareGPT | ✅ | ❌ | 会话内顺序 | ❌ |
+| MT-Bench | ✅ | ❌ | 2 轮 | ❌ |
+| LoCoMo | ✅ | ❌ | 多 session | ⚠️（~13k/段，拼几段可到 32k） |
+| LongMemEval | ✅ | ⚠️（带时间戳的 session） | 多 session | ✅（~115k） |
+| InfiniteBench En.Dia | ✅ | ❌ | 长对话 | ✅（103.6k） |
+| LMSYS-Chat-1M | ✅ | ❌ | 会话 | ❌（gated） |
+| BurstGPT | ❌ | ✅ | ✅ Session ID | ❌（平均几百 token） |
+| Azure trace | ❌ | ✅ | ❌ | ❌（max 14k） |
+| Mooncake trace | ❌ | ✅ | ✅ hash_ids | ✅（平均 12k，max 126k） |
+
+**结论**：没有任何一个数据集同时具备「文本 + 逐轮到达时间 + 前缀关系 + 32k」。要压测只能组合：trace 给时间/长度/前缀，文本按长度合成（Splitwise 就是这么做的）。

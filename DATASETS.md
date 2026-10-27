@@ -19,6 +19,16 @@
 
 ## A. 对话语料（有文本，无逐轮到达时间）
 
+| 数据集 | 来源 | 规模 | 实测长度 | 多轮形态 |
+|---|---|---|---|---|
+| WildChat-1M | AI2 真实用户 ↔ ChatGPT | 100 万段 | 中位 2,259 字符（≈600 tokens），轮数中位 4 | 多轮，话题常跳变 |
+| ShareGPT | 社区分享 | 约 9 万段 | 以几千 token 以内为主（未全量统计） | 多轮 |
+| MT-Bench | LMSYS | 80 题 × 2 轮 | 平均 404 字符（≈150 tokens） | 固定 2 轮 |
+| LoCoMo | Snap | 公开 10 段（论文 50 段） | 第 1 段 448 轮 / 53,049 字符（≈13k tokens） | 多 session、超长 |
+| LongMemEval | UCLA 等（ICLR 2025） | 500 条 | 约 115k tokens（论文口径） | 多 session 长历史 + QA |
+| InfiniteBench En.Dia | OpenBMB | 200 条 | 平均输入 103.6k tokens | 剧本式长对话 |
+| LMSYS-Chat-1M | LMSYS | 100 万段 | 未取样（gated） | 多轮 |
+
 ### A1. WildChat-1M
 
 - 来源：AI2 的免费 WildChat 服务，真实用户 ↔ ChatGPT（GPT-3.5/GPT-4）对话
@@ -133,6 +143,12 @@ Q2 Take a moment to evaluate and critique your own response.
 ---
 
 ## B. 请求轨迹（有到达时间/前缀关系，无文本）
+
+| 数据集 | 来源 | 规模 | 实测 token | ID / 前缀关系 | 同一 ID 间隔 |
+|---|---|---|---|---|---|
+| BurstGPT v2 | Azure 真实 ChatGPT/GPT-4 流量 | 约 529 万条 / 121 天 | 请求 625、响应 245 | `Session ID` | 中位 178 秒、平均 4,765 秒 |
+| Azure trace 2023 | Azure 生产推理 | 19,366 条 | 上下文 1,155、生成 211 | 无 | 无 ID；全局 0.18 秒 |
+| Mooncake / Kimi | Moonshot（FAST'25） | 12,031 条 | 输入 12,035、输出 343 | `hash_ids` 前缀块 | 同块中位 113,999 秒 |
 
 ### B1. BurstGPT v2
 

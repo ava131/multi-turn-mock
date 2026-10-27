@@ -144,11 +144,11 @@ Q2 Take a moment to evaluate and critique your own response.
 
 ## B. 请求轨迹（有到达时间/前缀关系，无文本）
 
-| 数据集 | 来源 | 规模 | 实测 token | ID / 前缀关系 | 同一 ID 间隔 |
+| 数据集 | 来源 | 规模 | 实测 token | ID / 前缀关系 | 同一 ID 的请求数间隔 |
 |---|---|---|---|---|---|
-| BurstGPT v2 | Azure 真实 ChatGPT/GPT-4 流量 | 约 529 万条 / 121 天 | 请求 625、响应 245 | `Session ID` | 中位 178 秒、平均 4,765 秒 |
-| Azure trace 2023 | Azure 生产推理 | 19,366 条 | 上下文 1,155、生成 211 | 无 | 无 ID；全局 0.18 秒 |
-| Mooncake / Kimi | Moonshot（FAST'25） | 12,031 条 | 输入 12,035、输出 343 | `hash_ids` 前缀块 | 同块中位 113,999 秒 |
+| BurstGPT v2 | Azure 真实 ChatGPT/GPT-4 流量 | 约 529 万条 / 121 天 | 请求 625、响应 245 | `Session ID` | 中位 15、平均 2,245 |
+| Azure trace 2023 | Azure 生产推理 | 19,366 条 | 上下文 1,155、生成 211 | 无 | 无 ID，无法计算 |
+| Mooncake / Kimi | Moonshot（FAST'25） | 12,031 条 | 输入 12,035、输出 343 | `hash_ids` 前缀块 | 中位 384、平均 728 |
 
 ### B1. BurstGPT v2
 
@@ -158,7 +158,8 @@ Q2 Take a moment to evaluate and critique your own response.
 - 字段：`Timestamp / Session ID / Elapsed time / Model / Request tokens / Response tokens / Total tokens / Log Type`
 - 长度：请求 token 平均 **625**、响应平均 **245**、max 3,407
 - 说明：`Session ID` 只出现在 `Conversation log`，`API log` 为空
-- 时序：同一 Session 相邻请求间隔 **中位 178 秒、平均 4,765 秒**（长尾很大，p90 3,226 秒）；每会话平均 3.70 条请求（中位 2，max 191）；全局到达间隔平均 1.62 秒
+- 同一 Session 相邻请求的**请求数间隔**：中位 **15**、平均 **2,245**、p90 996、p99 40,875（即两次提问之间插入了多少条别的请求）
+- 每会话平均 3.70 条请求（中位 2，max 191）
 
 示例：
 
@@ -176,7 +177,7 @@ Timestamp,Session ID,Elapsed time,Model,Request tokens,Response tokens,Total tok
 - 规模：conversation trace **19,366 条**；另有 code trace
 - 字段：`TIMESTAMP / ContextTokens / GeneratedTokens`
 - 长度：上下文平均 **1,155** tokens、生成平均 **211**、max 14,050
-- 时序：**没有 session id**，只能算全局到达间隔——19,366 条 / 3,502 秒，平均 **0.18 秒**（中位 0.118 秒）
+- 到达率：**没有 session id**，算不了同 ID 的请求数间隔，只能给全局到达率——19,366 条 / 3,502 秒，平均 **0.18 秒/条**
 - 短板：没有 session id、没有文本（隐私原因）
 
 示例：
@@ -198,7 +199,7 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 - 长度：输入平均 **12,035** tokens、输出平均 343、max 126,195
 - `hash_ids`：前缀块哈希（块大小约 512 token），直接描述前缀共享
 - 复用：**42.5%** 的请求有 ≥50% 前缀可复用；共享 token 中位 512、p90 12,800、max 122,880
-- 时序：同一个 hash 块相邻两次被引用的间隔 **中位 113,999 秒（≈31.7 小时）、平均 212,905 秒**，p90 519,000 秒；全局到达间隔平均 294 秒
+- 同一个 hash 块相邻两次被引用的**请求数间隔**：中位 **384**、平均 **728**、p90 1,748、p99 5,527
 
 示例：
 
@@ -213,24 +214,33 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 
 ---
 
-## 同一 ID 的请求间隔（trace）
+## 同一 ID 的请求数间隔（trace）
 
-“同一个 ID”在三份 trace 里的含义不同：
+“同一个 ID”在三份 trace 里的含义不同；统计的是**两条同 ID 请求之间插入了多少条其它请求**，不是时间。
 
-| trace | ID 是什么 | 同一 ID 的相邻请求间隔 |
+| trace | ID 是什么 | 同一 ID 的请求数间隔 |
 |---|---|---|
-| BurstGPT | `Session ID`（会话） | 中位 **178 秒**、平均 **4,765 秒**、p90 3,226 秒（长尾到 18 天） |
-| Azure trace | 无 ID | 无法计算；全局到达间隔平均 **0.18 秒** |
-| Mooncake | `hash_ids` 里的前缀块 | 同一块被再次引用：中位 **113,999 秒**、平均 **212,905 秒**、p90 519,000 秒 |
+| BurstGPT | `Session ID`（会话） | 中位 **15**、平均 **2,245**、p90 996、p99 40,875、max 585,285 |
+| Azure trace | 无 ID | 无法计算 |
+| Mooncake | `hash_ids` 里的前缀块 | 中位 **384**、平均 **728**、p90 1,748、p99 5,527、max 10,514 |
 
-可以这样理解：
+分布（两次同 ID 请求之间的请求数）：
 
-- **BurstGPT / Mooncake** 都有“同一份前缀隔很久才被再次用到”的现象，只是 BurstGPT 以会话为单位、Mooncake 以块为单位；
-- **Azure** 完全没有会话信息，只能当到达率样本用。
+| 间隔 | BurstGPT（会话） | Mooncake（块） |
+|---|---|---|
+| = 1（紧挨着） | 12.5% | 11.4% |
+| ≤ 10 | 44.7% | 11.4% |
+| ≤ 100 | 71.7% | 15.7% |
+| ≤ 1000 | 90.0% | 77.8% |
+
+解读：
+
+- **BurstGPT**：近一半的追问在 10 条请求以内（中位 15），但长尾很重——平均 2,245 是被少数隔了几十万条才回来的会话拉高的；
+- **Mooncake**：块的复用要么紧接着（11.4% 间隔为 1），要么隔得很远（中位 384、p99 5,527），几乎没有“隔几条就复用”的中间态。
 
 ## 汇总
 
-| 数据集 | 文本 | 逐轮到达时间 | 前缀/会话关系 | 同一 ID 间隔 |
+| 数据集 | 文本 | 逐轮到达时间 | 前缀/会话关系 | 同一 ID 请求数间隔 |
 |---|---|---|---|---|
 | WildChat-1M | ✅ | ❌（仅会话级时间戳） | ❌ | — |
 | ShareGPT | ✅ | ❌ | 会话内顺序 | — |
@@ -239,9 +249,9 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 | LongMemEval | ✅ | ⚠️（session 时间戳） | 多 session | — |
 | InfiniteBench En.Dia | ✅ | ❌ | 长对话 | — |
 | LMSYS-Chat-1M | ✅ | ❌ | 会话 | — |
-| BurstGPT | ❌ | ✅ | ✅ Session ID | 中位 178 秒 / 平均 4,765 秒 |
-| Azure trace | ❌ | ✅ | ❌ | 无 ID；全局 0.18 秒 |
-| Mooncake trace | ❌ | ✅ | ✅ hash_ids | 同块 中位 113,999 秒 |
+| BurstGPT | ❌ | ✅ | ✅ Session ID | 中位 15 / 平均 2,245 |
+| Azure trace | ❌ | ✅ | ❌ | 无 ID |
+| Mooncake trace | ❌ | ✅ | ✅ hash_ids | 中位 384 |
 
 **结论**：没有任何一个数据集同时具备「文本 + 逐轮到达时间 + 前缀关系」。trace 提供时间/长度/前缀结构，文本需要另行合成或拼接。
 

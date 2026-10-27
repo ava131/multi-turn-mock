@@ -5,7 +5,7 @@
 - **A. 对话语料**：有文本，没有逐轮到达时间；
 - **B. 请求轨迹（trace）**：有到达时间 / 前缀关系，没有文本。
 
-所有长度都是**本次抽样实测**，样本量写在各小节末尾，不是论文数字。
+所有数字都是**本次抽样实测**，样本量写在各小节末尾，不是论文数字。
 
 ## 目录
 
@@ -13,7 +13,7 @@
   - [A1. WildChat-1M](#a1-wildchat-1m) · [A2. ShareGPT](#a2-sharegpt) · [A3. MT-Bench](#a3-mt-bench) · [A4. LoCoMo](#a4-locomo) · [A5. LongMemEval](#a5-longmemeval) · [A6. InfiniteBench](#a6-infinitebenchendia--zhdia) · [A7. LMSYS-Chat-1M](#a7-lmsys-chat-1m)
 - [B. 请求轨迹](#b-请求轨迹有到达时间前缀关系无文本)
   - [B1. BurstGPT](#b1-burstgpt-v2) · [B2. Azure trace](#b2-azure-llm-inference-trace-2023splitwise) · [B3. Mooncake](#b3-mooncake--kimi-trace)
-- [汇总](#汇总) · [怎么用](#怎么用这份整理) · [测量方法](#测量方法)
+- [同一 ID 的请求间隔](#同一-id-的请求间隔trace) · [汇总](#汇总) · [怎么用](#怎么用这份整理) · [测量方法](#测量方法)
 
 ---
 
@@ -114,14 +114,14 @@ Q2 Take a moment to evaluate and critique your own response.
 - 链接：<https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned>
 - 规模：500 条问题，每条配一段长聊天历史（多 session、带时间戳）
 - 长度：S 版约 **115k tokens**，M 版百万级（论文口径）
-- 用途：长历史 + 记忆类 QA，不是对话语料
+- 说明：是“长历史 + 记忆类 QA”，不是对话语料；历史里带 session 时间戳，但逐轮时间未公开
 
 ### A6. InfiniteBench（En.Dia / Zh.Dia）
 
 - 来源：OpenBMB 100k+ 长上下文基准
 - 链接：<https://github.com/OpenBMB/InfiniteBench>
 - En.Dia：**200 条，平均输入 103.6k tokens**（剧本式长对话，识别说话人）
-- 中文版 `Zh.Dia` 同结构；可截断到 32k 使用
+- 中文版 `Zh.Dia` 同结构
 
 ### A7. LMSYS-Chat-1M
 
@@ -141,18 +141,17 @@ Q2 Take a moment to evaluate and critique your own response.
 - 规模：约 529 万条请求 / 121 天
 - 字段：`Timestamp / Session ID / Elapsed time / Model / Request tokens / Response tokens / Total tokens / Log Type`
 - 长度：请求 token 平均 **625**、响应平均 **245**、max 3,407
-- 价值：`Session ID` 直接给出会话归属，可按时间重放多轮
+- 说明：`Session ID` 只出现在 `Conversation log`，`API log` 为空
+- 时序：同一 Session 相邻请求间隔 **中位 178 秒、平均 4,765 秒**（长尾很大，p90 3,226 秒）；每会话平均 3.70 条请求（中位 2，max 191）；全局到达间隔平均 1.62 秒
 
 示例：
 
 ```
-Timestamp,Model,Request tokens,Response tokens,Total tokens,Log Type
-5,ChatGPT,472,18,490,Conversation log
-45,ChatGPT,1087,230,1317,Conversation log
-118,GPT-4,417,276,693,Conversation log
+Timestamp,Session ID,Elapsed time,Model,Request tokens,Response tokens,Total tokens,Log Type
+19440110.0,1722ac82-0a46-4bf0-aa08-89794e7a2b3f,43,GPT-4,906,446,1352,Conversation log
 ```
 
-样本：前 7,059 行（原文件约 529 万行）。
+样本：`BurstGPT_3.csv` 前 50 MB（1,242,541 条请求、8,281 个会话）。
 
 ### B2. Azure LLM Inference Trace 2023（Splitwise）
 
@@ -161,7 +160,8 @@ Timestamp,Model,Request tokens,Response tokens,Total tokens,Log Type
 - 规模：conversation trace **19,366 条**；另有 code trace
 - 字段：`TIMESTAMP / ContextTokens / GeneratedTokens`
 - 长度：上下文平均 **1,155** tokens、生成平均 **211**、max 14,050
-- 短板：**没有 session id、没有文本**（隐私原因）
+- 时序：**没有 session id**，只能算全局到达间隔——19,366 条 / 3,502 秒，平均 **0.18 秒**（中位 0.118 秒）
+- 短板：没有 session id、没有文本（隐私原因）
 
 示例：
 
@@ -169,7 +169,6 @@ Timestamp,Model,Request tokens,Response tokens,Total tokens,Log Type
 TIMESTAMP,ContextTokens,GeneratedTokens
 2023-11-16 18:15:46.6805900,374,44
 2023-11-16 18:15:50.9951690,396,109
-2023-11-16 18:15:51.2224670,879,55
 ```
 
 样本：全量 19,366 行。
@@ -181,8 +180,9 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 - 规模：**12,031 条请求**，时间跨度 0 ~ 3,536,999（秒）
 - 字段：`timestamp / input_length / output_length / hash_ids`
 - 长度：输入平均 **12,035** tokens、输出平均 343、max 126,195
-- `hash_ids`：前缀块哈希（**块大小约 512 token**），直接描述前缀共享
-- 复用统计：**42.5%** 的请求有 ≥50% 前缀可复用；共享 token 中位 512、p90 12,800、max 122,880
+- `hash_ids`：前缀块哈希（块大小约 512 token），直接描述前缀共享
+- 复用：**42.5%** 的请求有 ≥50% 前缀可复用；共享 token 中位 512、p90 12,800、max 122,880
+- 时序：同一个 hash 块相邻两次被引用的间隔 **中位 113,999 秒（≈31.7 小时）、平均 212,905 秒**，p90 519,000 秒；全局到达间隔平均 294 秒
 
 示例：
 
@@ -197,28 +197,43 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 
 ---
 
+## 同一 ID 的请求间隔（trace）
+
+“同一个 ID”在三份 trace 里的含义不同：
+
+| trace | ID 是什么 | 同一 ID 的相邻请求间隔 |
+|---|---|---|
+| BurstGPT | `Session ID`（会话） | 中位 **178 秒**、平均 **4,765 秒**、p90 3,226 秒（长尾到 18 天） |
+| Azure trace | 无 ID | 无法计算；全局到达间隔平均 **0.18 秒** |
+| Mooncake | `hash_ids` 里的前缀块 | 同一块被再次引用：中位 **113,999 秒**、平均 **212,905 秒**、p90 519,000 秒 |
+
+可以这样理解：
+
+- **BurstGPT / Mooncake** 都有“同一份前缀隔很久才被再次用到”的现象，只是 BurstGPT 以会话为单位、Mooncake 以块为单位；
+- **Azure** 完全没有会话信息，只能当到达率样本用。
+
 ## 汇总
 
-| 数据集 | 文本 | 逐轮到达时间 | 前缀/会话关系 | 32k 级别 |
+| 数据集 | 文本 | 逐轮到达时间 | 前缀/会话关系 | 同一 ID 间隔 |
 |---|---|---|---|---|
-| WildChat-1M | ✅ | ❌（仅会话级时间戳） | ❌ | ❌（中位 ~600 tokens） |
-| ShareGPT | ✅ | ❌ | 会话内顺序 | ❌ |
-| MT-Bench | ✅ | ❌ | 2 轮 | ❌ |
-| LoCoMo | ✅ | ❌ | 多 session | ⚠️（~13k/段，拼几段可到 32k） |
-| LongMemEval | ✅ | ⚠️（session 时间戳） | 多 session | ✅（~115k） |
-| InfiniteBench En.Dia | ✅ | ❌ | 长对话 | ✅（103.6k） |
-| LMSYS-Chat-1M | ✅ | ❌ | 会话 | ❌（gated） |
-| BurstGPT | ❌ | ✅ | ✅ Session ID | ❌（平均几百 token） |
-| Azure trace | ❌ | ✅ | ❌ | ❌（max 14k） |
-| Mooncake trace | ❌ | ✅ | ✅ hash_ids | ✅（平均 12k，max 126k） |
+| WildChat-1M | ✅ | ❌（仅会话级时间戳） | ❌ | — |
+| ShareGPT | ✅ | ❌ | 会话内顺序 | — |
+| MT-Bench | ✅ | ❌ | 2 轮 | — |
+| LoCoMo | ✅ | ❌ | 多 session | — |
+| LongMemEval | ✅ | ⚠️（session 时间戳） | 多 session | — |
+| InfiniteBench En.Dia | ✅ | ❌ | 长对话 | — |
+| LMSYS-Chat-1M | ✅ | ❌ | 会话 | — |
+| BurstGPT | ❌ | ✅ | ✅ Session ID | 中位 178 秒 / 平均 4,765 秒 |
+| Azure trace | ❌ | ✅ | ❌ | 无 ID；全局 0.18 秒 |
+| Mooncake trace | ❌ | ✅ | ✅ hash_ids | 同块 中位 113,999 秒 |
 
-**结论**：没有任何一个数据集同时具备「文本 + 逐轮到达时间 + 前缀关系 + 32k」。要压测只能组合使用。
+**结论**：没有任何一个数据集同时具备「文本 + 逐轮到达时间 + 前缀关系」。trace 提供时间/长度/前缀结构，文本需要另行合成或拼接。
 
 ## 怎么用这份整理
 
-1. **需要真实多轮文本**：WildChat / ShareGPT / LoCoMo（短），LongMemEval / InfiniteBench（长）；
-2. **需要真实到达节奏与前缀复用**：BurstGPT（Session ID）或 Mooncake（hash_ids）；
-3. **需要 32k + 可控前缀**：用 trace 定时间/长度/前缀结构，文本按长度合成（Splitwise 的做法）；
+1. **需要真实多轮文本**：WildChat / ShareGPT / LoCoMo / LongMemEval / InfiniteBench；
+2. **需要真实到达节奏**：BurstGPT（会话级）或 Azure（只给全局速率）；
+3. **需要真实前缀复用关系**：Mooncake 的 `hash_ids` 最直接；
 4. **需要“驱逐-复用”特定 case**：用本仓库 `gen_evict_workload.py` 按容量参数构造。
 
 ## 测量方法
@@ -230,7 +245,7 @@ TIMESTAMP,ContextTokens,GeneratedTokens
 | MT-Bench | 全量 80 题 |
 | LoCoMo | 公开 10 段中的第 1 段 |
 | LongMemEval / InfiniteBench / LMSYS | 引用论文或 README 口径，未本地复测 |
-| BurstGPT | 前 7,059 行样本 |
+| BurstGPT | `BurstGPT_3.csv` 前 50 MB（1,242,541 条） |
 | Azure trace | 全量 19,366 行 |
 | Mooncake | 全量 12,031 行 |
 

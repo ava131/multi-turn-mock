@@ -41,6 +41,9 @@ jobs:
       - name: same each turn
         run: python gen_multiturn_longbench.py --format gsm8k --same-each-turn --num-turns 3 --users-per-turn 3 --base-len 4000 --out /tmp/same.jsonl
 
+      - name: eviction workload
+        run: python gen_evict_workload.py --capacity-tokens 4000 --hot-tokens 2000 --cold-tokens 500 --cold-count 3 --revisits 2 --out /tmp/evict.jsonl --trace /tmp/evict.json
+
       - name: doc source (concat + verbatim)
         run: |
           python - <<'PY'
@@ -81,6 +84,9 @@ jobs:
           gsm = load("/tmp/gsm.jsonl")
           assert all(set(r) == {"question", "answer"} for r in gsm)
           assert gsm[3]["question"].startswith(gsm[0]["question"] + "\n\n" + gsm[0]["answer"])
+
+          evict = load("/tmp/evict.jsonl")
+          assert len(evict) == 9, "驱逐负载条数不对"
 
           verbatim = load("/tmp/verbatim.jsonl")
           assert verbatim[0]["context"].startswith("第"), "verbatim 首条应等于源文档"

@@ -370,6 +370,39 @@ python3 gen_multiturn_longbench.py --format gsm8k --same-each-turn \
 - 文件仍是轮次优先，请求 #1 和 #26（K=25）内容逐字节一致
 - 适合验证“缓存到底能不能命中”，把数据因素排除掉
 
+## 构造“驱逐-复用”型用例（`gen_evict_workload.py`）
+
+想证明“老前缀被容量挤掉、新方法还能命中”，公开数据集里没有现成的——这取决于你的 KV 容量和驱逐策略，必须按部署参数构造。
+
+```bash
+python3 gen_evict_workload.py \
+    --capacity-tokens 64000 --hot-tokens 32000 \
+    --cold-tokens 8000 --cold-count 30 --revisits 3 \
+    --format gsm8k --out /tmp/evict.jsonl --trace /tmp/evict.trace.json
+```
+
+负载形状：
+
+```
+[热前缀 32k] -> 30 条冷请求（各 8k，独占前缀） -> 复用热前缀的新请求
+             -> 30 条冷请求 -> 复用 -> ...
+```
+
+脚本先用**块级 LRU 模拟**验证 baseline 是否真的驱逐了热前缀，再输出 jsonl + trace 清单：
+
+```
+每次复用命中的块数：baseline [0, 0, 0] | pin [2000, 2000, 2000]（热前缀共 2000 块）
+```
+
+也就是：baseline 每次复用都从零 prefill，保留热前缀的方法每次都省下 32k token 的 prefill。
+
+调参要点：
+
+- 冷请求总量要**刚好超过**容量（`cold_count × cold_tokens ≈ 1.2~2 × capacity`），太少不会驱逐，太多会把冷数据也反复驱逐、掩盖差异
+- 热前缀尽量大（32k），复用次数 3~5 次，收益才显著
+- 块大小按 vLLM 默认 16 token 对齐；热请求必须**先完成**（块才会进 prefix cache），再发冷请求施压
+- 看收益要看**复用请求自己的 TTFT/prefill**，别只看全局 hit rate（冷流量会把平均值稀释）
+
 ## 常见报错：`KeyError: "Column answer not in the dataset"`
 
 ```
